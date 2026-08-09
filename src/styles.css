@@ -65,6 +65,131 @@
   --radius: 0.35rem;
   --font-display: "Frank Ruhl Libre", Georgia, serif;
   --font-sans: "Heebo", ui-sans-serif, system-ui, sans-serif;
+  --background: oklch(0.984 0.004 250);
+  --foreground: oklch(0.22 0.055 262);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.22 0.055 262);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.22 0.055 262);
+  --primary: oklch(0.28 0.085 262);
+  --primary-foreground: oklch(0.985 0.006 250);
+  --secondary: oklch(0.945 0.012 250);
+  --secondary-foreground: oklch(0.28 0.085 262);
+  --muted: oklch(0.945 0.012 250);
+  --muted-foreground: oklch(0.52 0.03 258);
+  --accent: oklch(0.74 0.125 82);
+  --accent-foreground: oklch(0.22 0.055 262);
+  --destructive: oklch(0.55 0.18 27);
+  --destructive-foreground: oklch(0.985 0.003 95);
+  --border: oklch(0.9 0.014 252);
+  --input: oklch(0.9 0.014 252);
+  --ring: oklch(0.74 0.125 82);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.21 0.075 262);
+  --sidebar-foreground: oklch(0.93 0.012 250);
+  --sidebar-primary: oklch(0.78 0.13 84);
+  --sidebar-primary-foreground: oklch(0.19 0.07 262);
+  --sidebar-accent: oklch(0.28 0.08 262);
+  --sidebar-accent-foreground: oklch(0.98 0.008 250);
+  --sidebar-border: oklch(0.31 0.075 262);
+  --sidebar-ring: oklch(0.78 0.13 84);
+}
+
+/* ---------- ערכות נושא ---------- */
+
+/* לילה נייבי — כהה עם זהב */
+[data-theme="navy-night"] {
+  --background: oklch(0.18 0.06 262);
+  --foreground: oklch(0.95 0.01 250);
+  --card: oklch(0.23 0.065 262);
+  --card-foreground: oklch(0.95 0.01 250);
+  --popover: oklch(0.23 0.065 262);
+  --popover-foreground: oklch(0.95 0.01 250);
+  --primary: oklch(0.78 0.13 84);
+  --primary-foreground: oklch(0.19 0.07 262);
+  --secondary: oklch(0.28 0.07 262);
+  --secondary-foreground: oklch(0.95 0.01 250);
+  --muted: oklch(0.28 0.07 262);
+  --muted-foreground: oklch(0.75 0.03 252);
+  --accent: oklch(0.8 0.13 85);
+  --accent-foreground: oklch(0.19 0.07 262);
+  --border: oklch(0.33 0.06 262);
+  --input: oklch(0.33 0.06 262);
+  --ring: oklch(0.8 0.13 85);
+  --sidebar: oklch(0.15 0.055 262);
+  --sidebar-foreground: oklch(0.93 0.012 250);
+  --sidebar-primary: oklch(0.8 0.13 85);
+  --sidebar-primary-foreground: oklch(0.16 0.06 262);
+  --sidebar-accent: oklch(0.24 0.065 262);
+  --sidebar-accent-foreground: oklch(0.97 0.008 250);
+  --sidebar-border: oklch(0.27 0.06 262);
+  --sidebar-ring: oklch(0.8 0.13 85);
+}
+
+/* פלטינה — לבן ונייבי מינימלי */
+[data-theme="platinum"] {
+  --background: oklch(0.995 0.002 250);
+  --foreground: oklch(0.24 0.04 258);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.24 0.04 258);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.24 0.04 258);
+  --primary: oklch(0.3 0.07 260);
+  --primary-foreground: oklch(0.99 0.003 250);
+  --secondary: oklch(0.955 0.008 250);
+  --secondary-foreground: oklch(0.3 0.07 260);
+  --muted: oklch(0.955 0.008 250);
+  --muted-foreground: oklch(0.55 0.02 256);
+  --accent: oklch(0.62 0.09 250);
+  --accent-foreground: oklch(0.99 0.003 250);
+  --border: oklch(0.915 0.008 252);
+  --input: oklch(0.915 0.008 252);
+  --ring: oklch(0.62 0.09 250);
+  --sidebar: oklch(0.975 0.005 250);
+  --sidebar-foreground: oklch(0.26 0.04 258);
+  --sidebar-primary: oklch(0.3 0.07 260);
+  --sidebar-primary-foreground: oklch(0.99 0.003 250);
+  --sidebar-accent: oklch(0.93 0.01 250);
+  --sidebar-accent-foreground: oklch(0.26 0.04 258);
+  --sidebar-border: oklch(0.9 0.01 252);
+  --sidebar-ring: oklch(0.62 0.09 250);
+}
+
+/* אמרלד ויוקרה */
+[data-theme="emerald"] {
+  --background: oklch(0.982 0.008 150);
+  --foreground: oklch(0.24 0.05 165);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.24 0.05 165);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.24 0.05 165);
+  --primary: oklch(0.32 0.075 165);
+  --primary-foreground: oklch(0.985 0.008 150);
+  --secondary: oklch(0.945 0.018 155);
+  --secondary-foreground: oklch(0.3 0.07 165);
+  --muted: oklch(0.945 0.018 155);
+  --muted-foreground: oklch(0.5 0.03 162);
+  --accent: oklch(0.74 0.125 82);
+  --accent-foreground: oklch(0.24 0.05 165);
+  --border: oklch(0.9 0.02 155);
+  --input: oklch(0.9 0.02 155);
+  --ring: oklch(0.74 0.125 82);
+  --sidebar: oklch(0.24 0.06 165);
+  --sidebar-foreground: oklch(0.94 0.015 150);
+  --sidebar-primary: oklch(0.78 0.13 84);
+  --sidebar-primary-foreground: oklch(0.2 0.05 165);
+  --sidebar-accent: oklch(0.3 0.06 165);
+  --sidebar-accent-foreground: oklch(0.98 0.01 150);
+  --sidebar-border: oklch(0.33 0.055 165);
+  --sidebar-ring: oklch(0.78 0.13 84);
+}
+
+/* אבן חמה — הגרסה הקודמת */
+[data-theme="stone"] {
   --background: oklch(0.976 0.006 90);
   --foreground: oklch(0.245 0.012 60);
   --card: oklch(0.993 0.004 95);
@@ -79,16 +204,9 @@
   --muted-foreground: oklch(0.52 0.015 65);
   --accent: oklch(0.66 0.11 62);
   --accent-foreground: oklch(0.99 0.005 95);
-  --destructive: oklch(0.55 0.18 27);
-  --destructive-foreground: oklch(0.985 0.003 95);
   --border: oklch(0.885 0.011 82);
   --input: oklch(0.885 0.011 82);
   --ring: oklch(0.66 0.11 62);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
   --sidebar: oklch(0.255 0.014 62);
   --sidebar-foreground: oklch(0.9 0.01 85);
   --sidebar-primary: oklch(0.66 0.11 62);
