@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Chrome, Play, TestTube2 } from "lucide-react";
+import { Bot, Chrome, Play, TestTube2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/page-header";
@@ -9,6 +9,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Progress } from "@/components/ui/progress";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Link } from "@tanstack/react-router";
 
 export const Route = createFileRoute("/run")({
   head: () => ({
@@ -53,6 +61,26 @@ function RunPage() {
             <CardDescription>בחר חשבון וקבע את מצב ההרצה</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="automation">פרופיל אוטומציה</Label>
+              <Select defaultValue="login">
+                <SelectTrigger id="automation">
+                  <SelectValue placeholder="בחר פרופיל אוטומציה" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="login">כניסה למבא״ת</SelectItem>
+                  <SelectItem value="search">חיפוש גוש/חלקה</SelectItem>
+                  <SelectItem value="docs">הורדת מסמכי תכנית</SelectItem>
+                </SelectContent>
+              </Select>
+              <Link
+                to="/automations"
+                className="inline-flex items-center gap-1 text-xs text-accent hover:underline"
+              >
+                <Bot className="size-3.5" />
+                ניהול ובניית פרופילי אוטומציה
+              </Link>
+            </div>
             <div className="space-y-2">
               <Label htmlFor="google">חשבון Google להרצה</Label>
               <Input id="google" placeholder="office@tannenbaum.co.il" />
