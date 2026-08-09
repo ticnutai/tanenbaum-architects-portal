@@ -9,6 +9,7 @@ import {
   ScrollText,
   Settings,
   Compass,
+  Bot,
 } from "lucide-react";
 
 import {
@@ -37,6 +38,7 @@ const groups = [
     label: "אוטומציית מבא״ת",
     items: [
       { title: "פרופילי כניסה", url: "/profiles", icon: KeyRound },
+      { title: "פרופילי אוטומציה", url: "/automations", icon: Bot },
       { title: "שלבי עבודה", url: "/workflow", icon: ListOrdered },
       { title: "הפעלה", url: "/run", icon: PlayCircle },
       { title: "יומן ריצה", url: "/logs", icon: ScrollText },
