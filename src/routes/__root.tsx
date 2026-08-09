@@ -13,6 +13,7 @@ import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
+import { ThemeSwitcher } from "@/components/theme-switcher";
 import { Toaster } from "@/components/ui/sonner";
 
 function NotFoundComponent() {
@@ -143,6 +144,9 @@ function RootComponent() {
               <span className="font-display text-sm font-medium text-muted-foreground">
                 משרד טננבאום אדריכלות
               </span>
+              <div className="ms-auto">
+                <ThemeSwitcher />
+              </div>
             </header>
             <main className="flex-1 px-5 py-8 md:px-10">
               {/* Required: nested routes render here. */}
