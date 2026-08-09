@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}יומן ריצה | מבא״ת{% endblock %}
+{% block content %}
+<section class="hero">
+  <span class="eyebrow">תיעוד ובקרה</span>
+  <h1>יומן ריצה</h1>
+  <p>כל הרצה נשמרת עם השלבים שבוצעו, שגיאות ופעולות ידניות.</p>
+</section>
+
+<section class="stats-grid">
+  <article class="stat card"><span>סה״כ אירועים</span><strong id="statTotal">0</strong></article>
+  <article class="stat card success"><span>הצלחות</span><strong id="statSuccess">0</strong></article>
+  <article class="stat card error"><span>שגיאות</span><strong id="statErrors">0</strong></article>
+  <article class="stat card manual"><span>עצירות ידניות</span><strong id="statManual">0</strong></article>
+</section>
+
+<section class="toolbar card">
+  <div class="toolbar-group">
+    <label class="search"><span>⌕</span><input id="searchLogs" placeholder="חיפוש ביומן"></label>
+    <select id="logFilter"><option value="all">כל האירועים</option><option value="error">שגיאות בלבד</option><option value="success">הצלחות</option><option value="manual">פעולות ידניות</option><option value="recorded">הקלטת שלבים</option></select>
+  </div>
+  <div class="toolbar-group">
+    <button class="button" id="refreshLogs">רענן</button>
+    <button class="button" id="copyErrors">העתק דוח שגיאות</button>
+    <a class="button" href="/api/logs/export.csv">ייצוא CSV</a>
+    <button class="button primary" id="openConsole">פתח קונסול</button>
+  </div>
+</section>
+
+<section id="errorReport" class="error-report card hidden">
+  <div><span class="eyebrow error-text">דוח שגיאות</span><h2>נמצאו תקלות הדורשות בדיקה</h2><p id="errorSummary"></p></div>
+  <button class="button danger" id="copyErrorPanel">העתק דוח</button>
+</section>
+
+<section class="run-panel card">
+  <div id="runList" class="run-list"></div>
+  <div id="emptyRuns" class="empty-state hidden"><strong>אין אירועים להצגה</strong><span>לאחר הקלטה או הרצה יופיע כאן תיעוד מפורט.</span></div>
+</section>
+
+<dialog id="consoleDialog" class="console-modal">
+  <div class="console-header"><div><span class="eyebrow">כלי אבחון</span><h2>קונסול מערכת</h2></div><div><button class="button" id="copyConsole">העתק</button><button class="icon-button" id="closeConsole">×</button></div></div>
+  <pre id="consoleContent" tabindex="0"></pre>
+  <div class="console-footer"><span>הקונסול אינו מציג סיסמאות או ערכי שדות רגישים.</span><button class="button" id="selectConsole">בחר הכול</button></div>
+</dialog>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='runs.js') }}"></script>{% endblock %}

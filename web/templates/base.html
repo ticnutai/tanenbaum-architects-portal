@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}מערכת אוטומציה למבא״ת{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">◫</span>
+      <div>
+        <strong>מערכת אוטומציה למבא״ת</strong>
+        <small>מרכז עבודה מקומי ומאובטח</small>
+      </div>
+    </div>
+    <nav class="nav-tabs" aria-label="ניווט ראשי">
+      <a class="{{ 'active' if active == 'workflow' }}" href="/workflow">רשימת השלבים</a>
+      <a class="{{ 'active' if active == 'runs' }}" href="/runs">יומן ריצה</a>
+    </nav>
+    <div class="top-actions">
+      <button class="icon-button" id="themeButton" title="ערכת צבעים">◉</button>
+      <button class="button ghost" id="openClassic">ממשק קלאסי</button>
+    </div>
+  </header>
+  <main class="page-shell">
+    {% block content %}{% endblock %}
+  </main>
+  <div id="toast" class="toast" role="status"></div>
+  <script>
+    window.MavatUI = {
+      toast(message, type='info') {
+        const el = document.getElementById('toast');
+        el.textContent = message; el.className = `toast show ${type}`;
+        clearTimeout(window.__toastTimer);
+        window.__toastTimer = setTimeout(() => el.className = 'toast', 3200);
+      },
+      async json(url, options={}) {
+        const response = await fetch(url, {headers: {'Content-Type':'application/json'}, ...options});
+        const data = await response.json();
+        if (!response.ok || data.ok === false) throw new Error(data.error || data.message || 'הפעולה נכשלה');
+        return data;
+      }
+    };
+    document.getElementById('openClassic').addEventListener('click', async () => {
+      await MavatUI.json('/api/classic/open', {method:'POST'});
+      MavatUI.toast('הממשק הקלאסי נפתח');
+    });
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

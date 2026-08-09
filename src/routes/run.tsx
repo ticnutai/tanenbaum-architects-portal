@@ -1,127 +1,23 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Bot, Chrome, Play, TestTube2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Chrome, FileSpreadsheet, PauseCircle, Play, Square, TestTube2 } from "lucide-react";
 import { toast } from "sonner";
-
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { Progress } from "@/components/ui/progress";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Link } from "@tanstack/react-router";
+import { Switch } from "@/components/ui/switch";
+import { mavatApi, type SettingsData, type WorkflowData } from "@/lib/mavat-api";
 
-export const Route = createFileRoute("/run")({
-  head: () => ({
-    meta: [
-      { title: "הפעלה — טננבאום אדריכלות" },
-      {
-        name: "description",
-        content: "הפעלת תהליך מבא״ת במצב בדיקה או בדפדפן Chrome, כולל עצירות ידניות ומעקב התקדמות.",
-      },
-      { property: "og:title", content: "הפעלה — טננבאום אדריכלות" },
-      { property: "og:description", content: "הפעלת תהליך מבא״ת במצב בדיקה או בדפדפן." },
-    ],
-  }),
-  component: RunPage,
-});
-
-function RunPage() {
-  return (
-    <div className="mx-auto max-w-5xl space-y-8">
-      <PageHeader
-        eyebrow="מנוע הרצה"
-        title="הפעלה"
-        description="התחל תמיד במצב בדיקה. לאחר אימות השלבים ניתן לבטל את מצב הבדיקה ולהריץ בדפדפן."
-        actions={
-          <>
-            <Button variant="outline" onClick={() => toast("בדיקת Chrome — מצב הדגמה")}>
-              <Chrome className="size-4" />
-              בדיקת Chrome בלבד
-            </Button>
-            <Button onClick={() => toast.success("התהליך הופעל במצב בדיקה")}>
-              <Play className="size-4" />
-              התחל — פתח Chrome
-            </Button>
-          </>
-        }
-      />
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle className="font-display text-lg">הגדרות הרצה</CardTitle>
-            <CardDescription>בחר חשבון וקבע את מצב ההרצה</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="automation">פרופיל אוטומציה</Label>
-              <Select defaultValue="login">
-                <SelectTrigger id="automation">
-                  <SelectValue placeholder="בחר פרופיל אוטומציה" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="login">כניסה למבא״ת</SelectItem>
-                  <SelectItem value="search">חיפוש גוש/חלקה</SelectItem>
-                  <SelectItem value="docs">הורדת מסמכי תכנית</SelectItem>
-                </SelectContent>
-              </Select>
-              <Link
-                to="/automations"
-                className="inline-flex items-center gap-1 text-xs text-accent hover:underline"
-              >
-                <Bot className="size-3.5" />
-                ניהול ובניית פרופילי אוטומציה
-              </Link>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="google">חשבון Google להרצה</Label>
-              <Input id="google" placeholder="office@tannenbaum.co.il" />
-            </div>
-            <div className="flex items-center justify-between rounded-md border border-accent/40 bg-accent/5 p-3">
-              <div>
-                <p className="text-sm font-medium">מצב בדיקה בלבד</p>
-                <p className="text-xs text-muted-foreground">
-                  מציג מה היה מתבצע, בלי לפתוח דפדפן ובלי לשלוח נתונים
-                </p>
-              </div>
-              <Switch defaultChecked />
-            </div>
-            <div className="flex items-center justify-between rounded-md border border-border p-3">
-              <p className="text-sm font-medium">צילום מסך בכל שלב</p>
-              <Switch />
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 font-display text-lg">
-              <TestTube2 className="size-5 text-accent" />
-              מצב נוכחי
-            </CardTitle>
-            <CardDescription>ריצת בדיקה · 3 מתוך 7 שלבים</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <Progress value={43} />
-            <div className="rounded-md border border-border bg-muted/40 p-3 font-mono text-xs leading-6">
-              <p>[1] goto — נפתחה כתובת מבא״ת</p>
-              <p>[2] fill_label — מולא שם משתמש</p>
-              <p>[3] manual — ממתין לאימות דו-שלבי…</p>
-            </div>
-            <Button variant="secondary" className="w-full">
-              המשך אחרי פעולה ידנית
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    </div>
-  );
+export const Route = createFileRoute("/run")({ component: RunPage });
+function RunPage(){
+  const [settings,setSettings]=useState<SettingsData|null>(null);const [profiles,setProfiles]=useState<WorkflowData["profiles"]>({});const [profileId,setProfileId]=useState("");const [dry,setDry]=useState(true);
+  const load=async()=>{const [s,w]=await Promise.all([mavatApi<SettingsData>("/api/settings"),mavatApi<WorkflowData>("/api/workflow")]);setSettings(s);setProfiles(w.profiles);setProfileId(current=>current||Object.keys(w.profiles)[0]||"")};
+  useEffect(()=>{load();const timer=setInterval(load,1400);return()=>clearInterval(timer)},[]);const state=settings?.run;const running=["running","manual","stopping"].includes(state?.state||"");const progress=state?.total_rows?Math.round((state.current_row/state.total_rows)*100):0;
+  const action=async(name:"start"|"stop"|"continue")=>{try{const body=name==="start"?JSON.stringify({profile_id:profileId,dry_run:dry}):undefined;const result=await mavatApi<{message?:string}>(`/api/run/${name}`,{method:"POST",body});toast.success(result.message||"הפעולה בוצעה");await load()}catch(e){toast.error((e as Error).message)}};
+  const openChrome=async()=>{try{await mavatApi("/api/chrome/open",{method:"POST"});toast.success("Chrome נפתח בדף מבא״ת")}catch(e){toast.error((e as Error).message)}};
+  return <div className="mx-auto max-w-5xl space-y-8"><PageHeader eyebrow="מנוע הרצה" title="הפעלה" description="התחל במצב בדיקה. לאחר אימות השלבים בטל אותו והריץ את התהליך בחלון Chrome של המערכת." actions={<Button variant="outline" onClick={openChrome}><Chrome className="size-4"/>פתח Chrome בלבד</Button>}/>
+    <div className="grid gap-4 md:grid-cols-2"><Card><CardHeader><CardTitle className="font-display text-xl">הגדרות הרצה</CardTitle><CardDescription>בחר מקור נתונים, פרופיל ומצב הפעלה</CardDescription></CardHeader><CardContent className="space-y-4"><div className="rounded-md border p-3"><div className="flex items-center gap-2"><FileSpreadsheet className="size-4 text-accent"/><strong className="text-sm">{settings?.data_file_name||"לא נבחר קובץ נתונים"}</strong></div><p className="mt-1 text-xs text-muted-foreground">את הקובץ ניתן להחליף בדף נתוני לקוחות.</p></div><label className="block space-y-2 text-sm font-medium">פרופיל כניסה<select className="h-10 w-full rounded-md border bg-background px-3" value={profileId} onChange={e=>setProfileId(e.target.value)}>{!Object.keys(profiles).length&&<option value="">לא הוגדר פרופיל</option>}{Object.entries(profiles).map(([id,p])=><option key={id} value={id}>{p.name} · {p.username} {p.has_password?"🔒":"🔑"}</option>)}</select></label><div className="flex items-center justify-between rounded-md border border-accent/40 bg-accent/5 p-3"><div><p className="text-sm font-medium">מצב בדיקה בלבד</p><p className="text-xs text-muted-foreground">בודק את כל הרשומות בלי לפתוח דפדפן ובלי לשלוח נתונים</p></div><Switch checked={dry} onCheckedChange={setDry}/></div><div className="flex gap-2"><Button className="flex-1" onClick={()=>action("start")} disabled={running}><Play className="size-4"/>{dry?"התחל בדיקה":"התחל אוטומציה"}</Button>{running&&<Button variant="destructive" onClick={()=>action("stop")}><Square className="size-4"/>עצור</Button>}</div></CardContent></Card>
+      <Card className={state?.state==="manual"?"border-accent":""}><CardHeader><CardTitle className="flex items-center gap-2 font-display text-xl"><TestTube2 className="size-5 text-accent"/>מצב נוכחי</CardTitle><CardDescription>{state?.message||"מוכן להפעלה"}</CardDescription></CardHeader><CardContent className="space-y-5"><Progress value={progress}/><div className="rounded-md border bg-muted/40 p-4"><p className="font-mono text-xs">מצב: {state?.state||"idle"}</p><p className="mt-2 text-sm">רשומה {state?.current_row||0} מתוך {state?.total_rows||0}</p></div>{state?.state==="manual"&&<div className="rounded-md border border-accent bg-accent/10 p-4"><div className="flex items-start gap-3"><PauseCircle className="mt-0.5 size-5 text-accent"/><div><strong>נדרשת פעולה ידנית</strong><p className="mt-1 text-sm text-muted-foreground">{state.manual_message}</p></div></div><Button className="mt-4 w-full" onClick={()=>action("continue")}><Play className="size-4"/>ביצעתי — המשך בהרצה</Button></div>}</CardContent></Card></div>
+  </div>;
 }

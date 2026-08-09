@@ -7,7 +7,7 @@ import {
   HeadContent,
   Scripts,
 } from "@tanstack/react-router";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
@@ -144,7 +144,8 @@ function RootComponent() {
               <span className="font-display text-sm font-medium text-muted-foreground">
                 משרד טננבאום אדריכלות
               </span>
-              <div className="ms-auto">
+              <div className="ms-auto flex items-center gap-4">
+                <SystemStatus />
                 <ThemeSwitcher />
               </div>
             </header>
@@ -158,4 +159,15 @@ function RootComponent() {
       <Toaster />
     </QueryClientProvider>
   );
+}
+
+function SystemStatus() {
+  const [connected, setConnected] = useState(false);
+  useEffect(() => {
+    const check = () => fetch("/api/run/status").then((r) => setConnected(r.ok)).catch(() => setConnected(false));
+    check();
+    const timer = window.setInterval(check, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <span className="hidden items-center gap-2 text-xs text-muted-foreground sm:flex"><i className={`size-2 rounded-full ${connected ? "bg-emerald-500" : "bg-destructive"}`} />{connected ? "מנוע Python מחובר" : "המנוע מנותק"}</span>;
 }

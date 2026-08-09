@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}רשימת השלבים | מבא״ת{% endblock %}
+{% block content %}
+<section class="hero compact">
+  <span class="eyebrow">בונה תהליך</span>
+  <h1>רשימת השלבים</h1>
+  <p>גרור לשינוי סדר · בחר כמה פעולות עם Ctrl או Shift · Delete מוחק את הבחירה</p>
+</section>
+
+<section class="toolbar card">
+  <div class="toolbar-group primary-actions">
+    <button class="button primary" id="startRecording">● התחל הקלטה</button>
+    <button class="button" id="stopRecording" disabled>עצור הקלטה</button>
+    <span id="recordStatus" class="record-pill idle">ההקלטה כבויה</span>
+  </div>
+  <div class="toolbar-group">
+    <button class="button" id="openChrome">פתח Chrome ומבא״ת</button>
+    <button class="button" id="addStep">＋ הוסף שלב</button>
+    <button class="button ghost" id="openRuns">יומן ריצה</button>
+  </div>
+</section>
+
+<section class="filters">
+  <label class="search"><span>⌕</span><input id="searchSteps" placeholder="חיפוש בשם, פעולה או יעד"></label>
+  <select id="statusFilter"><option value="all">כל המצבים</option><option value="active">פעילים</option><option value="paused">מושהים</option><option value="secret">שלבי סיסמה</option></select>
+  <span id="stepCount" class="muted"></span>
+</section>
+
+<section class="workflow-panel card">
+  <div id="selectionBar" class="selection-bar hidden">
+    <strong><span id="selectedCount">0</span> פעולות נבחרו</strong>
+    <button class="button small" data-bulk="resume">הפעל</button>
+    <button class="button small" data-bulk="pause">השהה</button>
+    <button class="button small danger" data-bulk="delete">מחק</button>
+    <button class="button small ghost" id="clearSelection">בטל בחירה</button>
+  </div>
+  <div id="stepList" class="step-list" aria-live="polite"></div>
+  <div id="emptySteps" class="empty-state hidden"><strong>לא נמצאו שלבים</strong><span>שנה את הסינון או הוסף פעולה חדשה.</span></div>
+</section>
+
+<dialog id="stepDialog" class="modal">
+  <form method="dialog" id="stepForm">
+    <div class="modal-header"><div><span class="eyebrow">עריכת תהליך</span><h2 id="stepDialogTitle">פעולה חדשה</h2></div><button class="icon-button" value="cancel">×</button></div>
+    <input type="hidden" id="stepIndex">
+    <div class="form-grid">
+      <label>שם השלב<input id="stepName" required></label>
+      <label>סוג פעולה<select id="stepType"></select></label>
+      <label>היקף<select id="stepScope"><option value="once">פעם אחת</option><option value="per_record">לכל רשומה</option></select></label>
+      <label>זמן המתנה<input id="stepTimeout" type="number" min="1" value="30"></label>
+      <label class="span-2">יעד / תווית<input id="stepTarget"></label>
+      <label class="span-2">ערך / כתובת<input id="stepValue"></label>
+      <label class="check-row"><input id="stepEnabled" type="checkbox" checked> שלב פעיל</label>
+    </div>
+    <div class="modal-actions"><button class="button ghost" value="cancel">ביטול</button><button class="button primary" id="saveStep" value="default">שמירה</button></div>
+  </form>
+</dialog>
+
+<dialog id="secretDialog" class="modal">
+  <form method="dialog" id="secretForm">
+    <div class="modal-header"><div><span class="eyebrow">Windows Credential Manager</span><h2>🔑 ניהול סיסמה</h2></div><button class="icon-button" value="cancel">×</button></div>
+    <input type="hidden" id="secretStepIndex">
+    <div class="form-grid">
+      <label class="span-2">פרופיל קיים<select id="secretProfile"><option value="">פרופיל חדש</option></select></label>
+      <label>שם הפרופיל<input id="secretName" required></label>
+      <label>שם משתמש / תעודת זהות<input id="secretUsername" required></label>
+      <label>סיסמה חדשה<input id="secretPassword" type="password"></label>
+      <label>אימות סיסמה<input id="secretConfirm" type="password"></label>
+      <label class="check-row"><input id="showPassword" type="checkbox"> הצג סיסמה</label>
+    </div>
+    <div class="modal-actions split"><button type="button" class="button danger ghost" id="deletePassword">מחק סיסמה</button><span></span><button class="button ghost" value="cancel">ביטול</button><button class="button primary" id="saveSecret" value="default">שמור וקשר</button></div>
+  </form>
+</dialog>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='workflow.js') }}"></script>{% endblock %}

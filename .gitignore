@@ -16,6 +16,19 @@ dist-ssr
 .nitro
 *.local
 
+# Python automation runtime
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.artifact/
+run_logs/
+screenshots/
+outputs/*.inspect.ndjson
+
+# Electron local artifacts
+release/
+
 # Wrangler / Cloudflare
 .wrangler/
 .dev.vars

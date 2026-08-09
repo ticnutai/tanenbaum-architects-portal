@@ -1,0 +1,195 @@
+{
+  "name": "תהליך מבא״ת - בסיס למיפוי",
+  "version": 1,
+  "steps": [
+    {
+      "name": "פתיחת דף השירות",
+      "type": "goto",
+      "scope": "once",
+      "target": "",
+      "value": "https://www.gov.il/he/service/mvat",
+      "timeout_seconds": 45,
+      "enabled": true
+    },
+    {
+      "name": "מעבר להזדהות",
+      "type": "manual",
+      "scope": "once",
+      "target": "",
+      "value": "לחץ באתר על הקישור להגשת בקשה והגע למסך ההזדהות. לאחר מכן לחץ במערכת על 'המשך אחרי פעולה ידנית'.",
+      "timeout_seconds": 30,
+      "enabled": true
+    },
+    {
+      "name": "בחירת כניסה בדרך אחרת",
+      "type": "click_text",
+      "scope": "once",
+      "target": "לכניסה בדרך אחרת",
+      "value": "",
+      "timeout_seconds": 30,
+      "enabled": false
+    },
+    {
+      "name": "הזנת שם משתמש",
+      "type": "fill_label",
+      "scope": "once",
+      "target": "מספר זהות",
+      "value": "{username}",
+      "timeout_seconds": 30,
+      "enabled": false
+    },
+    {
+      "name": "הזנת סיסמה מאובטחת",
+      "type": "fill_secret",
+      "scope": "once",
+      "target": "סיסמה",
+      "value": "",
+      "timeout_seconds": 30,
+      "enabled": false
+    },
+    {
+      "name": "אימות ידני",
+      "type": "manual",
+      "scope": "once",
+      "target": "",
+      "value": "השלם קוד חד-פעמי, ביומטריה או CAPTCHA אם נדרש. כשהגעת למסך הראשי של מבא״ת לחץ 'המשך'.",
+      "timeout_seconds": 30,
+      "enabled": true
+    },
+    {
+      "name": "רשומת לקוח - ממתין למיפוי",
+      "type": "noop",
+      "scope": "per_record",
+      "target": "{client_name}",
+      "value": "גוש {block}, חלקה {parcel}",
+      "timeout_seconds": 30,
+      "enabled": true
+    },
+    {
+      "name": "לחיצה: לכניסה למערכת - הגשת תכניות מקוונות במערכת מבא\"ת (מבנה אחיד)",
+      "type": "click_role",
+      "scope": "once",
+      "target": "לכניסה למערכת - הגשת תכניות מקוונות במערכת מבא\"ת (מבנה אחיד)",
+      "value": "link",
+      "timeout_seconds": 30,
+      "enabled": true
+    },
+    {
+      "name": "לחיצה: כניסה",
+      "type": "click_role",
+      "scope": "once",
+      "target": "כניסה",
+      "value": "button",
+      "timeout_seconds": 30,
+      "enabled": true
+    },
+    {
+      "name": "מילוי שדה: שם תכנית",
+      "type": "fill_label",
+      "scope": "once",
+      "target": "שם תכנית",
+      "value": "{TODO}",
+      "timeout_seconds": 30,
+      "enabled": true
+    },
+    {
+      "name": "בחירה בשדה: סוג תכנית",
+      "type": "manual",
+      "scope": "once",
+      "target": "סוג תכנית",
+      "value": "בחר את הערך המתאים; יש לערוך שלב זה לאחר המיפוי",
+      "timeout_seconds": 30,
+      "enabled": true
+    },
+    {
+      "name": "בחירה בשדה: מרחב תכנון",
+      "type": "manual",
+      "scope": "once",
+      "target": "מרחב תכנון",
+      "value": "בחר את הערך המתאים; יש לערוך שלב זה לאחר המיפוי",
+      "timeout_seconds": 30,
+      "enabled": true
+    },
+    {
+      "name": "בחירה בשדה: מרחב תכנון",
+      "type": "manual",
+      "scope": "once",
+      "target": "מרחב תכנון",
+      "value": "בחר את הערך המתאים; יש לערוך שלב זה לאחר המיפוי",
+      "timeout_seconds": 30,
+      "enabled": true
+    },
+    {
+      "name": "בחירה בשדה: מוסד התכנון המוסמך להפקיד את התכנית",
+      "type": "manual",
+      "scope": "once",
+      "target": "מוסד התכנון המוסמך להפקיד את התכנית",
+      "value": "בחר את הערך המתאים; יש לערוך שלב זה לאחר המיפוי",
+      "timeout_seconds": 30,
+      "enabled": true
+    },
+    {
+      "name": "מילוי שדה: שטח התכנית בדונם",
+      "type": "fill_label",
+      "scope": "once",
+      "target": "שטח התכנית בדונם",
+      "value": "{TODO}",
+      "timeout_seconds": 30,
+      "enabled": true
+    },
+    {
+      "name": "לחיצה: שמירה",
+      "type": "click_role",
+      "scope": "once",
+      "target": "שמירה",
+      "value": "button",
+      "timeout_seconds": 30,
+      "enabled": true
+    },
+    {
+      "name": "לחיצה: שמירה",
+      "type": "click_role",
+      "scope": "once",
+      "target": "שמירה",
+      "value": "button",
+      "timeout_seconds": 30,
+      "enabled": true
+    },
+    {
+      "name": "לחיצה: שמירה",
+      "type": "click_role",
+      "scope": "once",
+      "target": "שמירה",
+      "value": "button",
+      "timeout_seconds": 30,
+      "enabled": true
+    },
+    {
+      "name": "לחיצה: שמירה",
+      "type": "click_role",
+      "scope": "once",
+      "target": "שמירה",
+      "value": "button",
+      "timeout_seconds": 30,
+      "enabled": true
+    },
+    {
+      "name": "לחיצה: שמירה",
+      "type": "click_role",
+      "scope": "once",
+      "target": "שמירה",
+      "value": "button",
+      "timeout_seconds": 30,
+      "enabled": true
+    },
+    {
+      "name": "לחיצה: שמירה",
+      "type": "click_role",
+      "scope": "once",
+      "target": "שמירה",
+      "value": "button",
+      "timeout_seconds": 30,
+      "enabled": true
+    }
+  ]
+}

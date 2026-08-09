@@ -3,6 +3,10 @@
 הבנת מה אני רוצה ?
 רוצה מערכת מעוצבת משוכללת עם סיידבר עם כל האפשרויות משרד טננבאום אדרילכות
 
+## MAVAT desktop integration
+
+The portal now uses one React interface for both localhost and Electron, backed by the local Python automation API. On Windows, run `setup_app.bat` once and then `run_app.bat` for Electron or `run_web.bat` for the browser version. Passwords remain in Windows Credential Manager and are never committed to this repository.
+
 This project was built with [Lovable](https://lovable.dev).
 
 **Live app**: https://tanenbaum-architects-portal.lovable.app
