@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AutomationsRouteImport } from './routes/automations'
 import { Route as ClientsRouteImport } from './routes/clients'
 import { Route as LogsRouteImport } from './routes/logs'
 import { Route as ProfilesRouteImport } from './routes/profiles'
@@ -21,6 +22,11 @@ import { Route as WorkflowRouteImport } from './routes/workflow'
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AutomationsRoute = AutomationsRouteImport.update({
+  id: '/automations',
+  path: '/automations',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ClientsRoute = ClientsRouteImport.update({
@@ -61,6 +67,7 @@ const WorkflowRoute = WorkflowRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/automations': typeof AutomationsRoute
   '/clients': typeof ClientsRoute
   '/logs': typeof LogsRoute
   '/profiles': typeof ProfilesRoute
@@ -71,6 +78,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/automations': typeof AutomationsRoute
   '/clients': typeof ClientsRoute
   '/logs': typeof LogsRoute
   '/profiles': typeof ProfilesRoute
@@ -82,6 +90,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/automations': typeof AutomationsRoute
   '/clients': typeof ClientsRoute
   '/logs': typeof LogsRoute
   '/profiles': typeof ProfilesRoute
@@ -94,6 +103,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/automations'
     | '/clients'
     | '/logs'
     | '/profiles'
@@ -104,6 +114,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/automations'
     | '/clients'
     | '/logs'
     | '/profiles'
@@ -114,6 +125,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/automations'
     | '/clients'
     | '/logs'
     | '/profiles'
@@ -125,6 +137,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AutomationsRoute: typeof AutomationsRoute
   ClientsRoute: typeof ClientsRoute
   LogsRoute: typeof LogsRoute
   ProfilesRoute: typeof ProfilesRoute
@@ -141,6 +154,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/automations': {
+      id: '/automations'
+      path: '/automations'
+      fullPath: '/automations'
+      preLoaderRoute: typeof AutomationsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/clients': {
@@ -197,6 +217,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AutomationsRoute: AutomationsRoute,
   ClientsRoute: ClientsRoute,
   LogsRoute: LogsRoute,
   ProfilesRoute: ProfilesRoute,
