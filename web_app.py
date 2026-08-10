@@ -19,6 +19,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+os.environ.setdefault("PYTHONUTF8", "1")
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
 from flask import Flask, Response, jsonify, redirect, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
 
@@ -77,6 +80,7 @@ class Runtime:
         self.chrome_preview_error = ""
         self.chrome_preview_updated_at = ""
         self.chrome_preview_frames = 0
+        self.chrome_interaction_lock = threading.Lock()
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         self.automation_dir = self.store.base_dir / "automations"
         self.automation_dir.mkdir(parents=True, exist_ok=True)
@@ -193,6 +197,7 @@ class Runtime:
                         [sys.executable, "-m", "mavat_app.preview_worker",
                          str(int(self.store.data.get("chrome_debug_port", 9222))), selected_target],
                         cwd=str(ROOT_DIR), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                        env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
                         creationflags=creation_flags,
                     )
                     self.chrome_preview_process = process
@@ -264,6 +269,28 @@ class Runtime:
 
         self.chrome_console_monitor_thread = threading.Thread(target=monitor, daemon=True)
         self.chrome_console_monitor_thread.start()
+
+    def chrome_interact(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.chrome_interaction_lock:
+            request_id = uuid.uuid4().hex
+            command = {**payload, "id": request_id}
+            creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            result = subprocess.run(
+                [sys.executable, "-m", "mavat_app.interactive_browser",
+                 str(int(self.store.data.get("chrome_debug_port", 9222))), self.chrome_preview_target_id],
+                cwd=str(ROOT_DIR), input=json.dumps(command, ensure_ascii=False) + "\n",
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", errors="replace", timeout=18,
+                env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+                creationflags=creation_flags,
+            )
+            lines = [line for line in (result.stdout or "").splitlines() if line.strip()]
+            if not lines:
+                raise RuntimeError((result.stderr or "").strip() or "מנוע השליטה בדפדפן לא החזיר תשובה")
+            response = json.loads(lines[-1])
+            if response.get("id") != request_id:
+                raise RuntimeError("התקבלה תשובה לא תואמת ממנוע הדפדפן")
+            return response
 
     def workflow_path(self, automation_id: str | None = None) -> Path:
         safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", automation_id or self.active_automation_id())
@@ -357,22 +384,37 @@ class Runtime:
             "last_error": self.last_error,
         }
 
-    def start_run(self, profile_id: str, dry_run: bool) -> tuple[bool, str]:
+    def start_run(self, profile_id: str, dry_run: bool, step_indices: list[int] | None = None) -> tuple[bool, str]:
         if self.runner_thread and self.runner_thread.is_alive():
             return False, "כבר מתבצעת הרצה"
         profiles = {profile.id: profile for profile in self.store.profiles()}
         profile = profiles.get(profile_id)
         if not profile:
             return False, "יש לבחור פרופיל כניסה"
+        workflow = self.read_workflow()
+        if step_indices is not None:
+            valid_indices = sorted({index for index in step_indices if 0 <= index < len(workflow.get("steps", []))})
+            if not valid_indices:
+                return False, "לא נבחרו שלבים תקינים להרצה"
+            selected_steps = []
+            for index in valid_indices:
+                step = json.loads(json.dumps(workflow["steps"][index], ensure_ascii=False))
+                step["_original_step_number"] = index + 1
+                selected_steps.append(step)
+            workflow = {**workflow, "steps": selected_steps}
         data_file, _ = self.active_data_file()
-        if not data_file:
-            return False, "יש לבחור קובץ Excel, CSV או Word"
-        try:
-            records = load_records(data_file)
-        except Exception as exc:
-            return False, f"טעינת הנתונים נכשלה: {exc}"
-        if not records:
-            return False, "קובץ הנתונים אינו מכיל רשומות"
+        needs_records = any(step.get("scope", "per_record") == "per_record" for step in workflow.get("steps", []))
+        if not data_file and needs_records:
+            return False, "השלבים שנבחרו דורשים קובץ Excel, CSV או Word"
+        if data_file:
+            try:
+                records = load_records(data_file)
+            except Exception as exc:
+                return False, f"טעינת הנתונים נכשלה: {exc}"
+            if not records:
+                return False, "קובץ הנתונים אינו מכיל רשומות"
+        else:
+            records = [{}]
         secrets = {item.id: self.store.get_password(item.id) for item in profiles.values()}
         self.run_state = "running"
         self.run_message = "בדיקת השלבים מתבצעת" if dry_run else "האוטומציה פועלת"
@@ -421,7 +463,7 @@ class Runtime:
             self.log(message)
 
         self.runner = WorkflowRunner(
-            workflow=self.read_workflow(), records=records,
+            workflow=workflow, records=records,
             username=profile.username, password=secrets.get(profile.id, ""),
             default_profile_id=profile.id, secrets_by_profile=secrets,
             browser_profile_dir=str(self.store.data["browser_profile_dir"]),
@@ -722,6 +764,53 @@ def api_create_automation() -> Response:
     return jsonify({"ok": True, "automation": automation})
 
 
+@app.get("/api/automations/library")
+def api_automation_library() -> Response:
+    items = []
+    for automation in runtime.automations():
+        automation_id = str(automation.get("id") or "")
+        workflow = load_workflow(runtime.workflow_path(automation_id))
+        items.append({
+            "id": automation_id,
+            "name": str(automation.get("name") or automation_id),
+            "description": str(automation.get("description") or ""),
+            "steps": workflow.get("steps", []),
+        })
+    return jsonify({"automations": items, "active_id": runtime.active_automation_id()})
+
+
+@app.post("/api/automations/from-steps")
+def api_create_automation_from_steps() -> Response:
+    payload = request.get_json(force=True) or {}
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        return jsonify({"ok": False, "error": "יש להזין שם לאוטומציה החדשה"}), 400
+    selections = payload.get("selections") or []
+    combined_steps: list[dict[str, Any]] = []
+    for selection in selections:
+        source_id = str(selection.get("automation_id") or "")
+        source_path = runtime.workflow_path(source_id)
+        if not source_path.is_file():
+            continue
+        source_steps = load_workflow(source_path).get("steps", [])
+        for index in sorted({int(value) for value in selection.get("indices") or []}):
+            if 0 <= index < len(source_steps):
+                combined_steps.append(json.loads(json.dumps(source_steps[index], ensure_ascii=False)))
+    if not combined_steps:
+        return jsonify({"ok": False, "error": "לא נבחרו שלבים לבניית האוטומציה"}), 400
+    automation_id = uuid.uuid4().hex
+    automation = {
+        "id": automation_id, "name": name,
+        "description": str(payload.get("description") or "אוטומציה שהורכבה משלבים קיימים"),
+        "status": "draft", "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    save_workflow(runtime.workflow_path(automation_id), {"name": name, "steps": combined_steps})
+    runtime.store.data.setdefault("automations", []).append(automation)
+    runtime.store.save()
+    runtime.log(f"נוצרה אוטומציה '{name}' מתוך {len(combined_steps)} שלבים קיימים")
+    return jsonify({"ok": True, "automation": automation, "steps_count": len(combined_steps)})
+
+
 @app.post("/api/automations/<automation_id>/activate")
 def api_activate_automation(automation_id: str) -> Response:
     try:
@@ -827,7 +916,11 @@ def api_upload_data_file() -> Response:
 @app.post("/api/run/start")
 def api_run_start() -> Response:
     payload = request.get_json(force=True) or {}
-    ok, message = runtime.start_run(str(payload.get("profile_id") or ""), bool(payload.get("dry_run", True)))
+    indices_payload = payload.get("step_indices")
+    step_indices = [int(value) for value in indices_payload] if isinstance(indices_payload, list) else None
+    ok, message = runtime.start_run(
+        str(payload.get("profile_id") or ""), bool(payload.get("dry_run", True)), step_indices
+    )
     return jsonify({"ok": ok, "message": message}), (200 if ok else 400)
 
 
@@ -904,6 +997,30 @@ def api_add_step() -> Response:
     return jsonify({"ok": True})
 
 
+@app.post("/api/steps/import")
+def api_import_steps() -> Response:
+    payload = request.get_json(force=True) or {}
+    source_id = str(payload.get("source_id") or "")
+    source_path = runtime.workflow_path(source_id)
+    if not source_path.is_file():
+        return jsonify({"ok": False, "error": "אוטומציית המקור לא נמצאה"}), 404
+    source_steps = load_workflow(source_path).get("steps", [])
+    indices = sorted({int(value) for value in payload.get("indices") or []})
+    selected_steps = [
+        json.loads(json.dumps(source_steps[index], ensure_ascii=False))
+        for index in indices if 0 <= index < len(source_steps)
+    ]
+    if not selected_steps:
+        return jsonify({"ok": False, "error": "לא נבחרו שלבים לייבוא"}), 400
+    workflow = runtime.read_workflow()
+    steps = workflow.setdefault("steps", [])
+    position = max(0, min(int(payload.get("position", len(steps))), len(steps)))
+    steps[position:position] = selected_steps
+    runtime.write_workflow(workflow)
+    runtime.log(f"יובאו {len(selected_steps)} שלבים מאוטומציה אחרת")
+    return jsonify({"ok": True, "imported": len(selected_steps), "position": position})
+
+
 @app.put("/api/steps/<int:index>")
 def api_update_step(index: int) -> Response:
     workflow = runtime.read_workflow()
@@ -911,7 +1028,7 @@ def api_update_step(index: int) -> Response:
     if index < 0 or index >= len(steps):
         return jsonify({"ok": False, "error": "השלב לא נמצא"}), 404
     updates = request.get_json(force=True) or {}
-    allowed = {"name", "type", "scope", "target", "value", "timeout_seconds", "enabled", "credential_profile_id"}
+    allowed = {"name", "type", "scope", "target", "value", "timeout_seconds", "enabled", "credential_profile_id", "locator", "fallbacks", "page_url", "position", "confidence", "recorded_at"}
     steps[index].update({key: value for key, value in updates.items() if key in allowed})
     runtime.write_workflow(workflow)
     return jsonify({"ok": True})
@@ -1123,6 +1240,78 @@ def api_chrome_preview_select() -> Response:
     if runtime.chrome_preview_process and runtime.chrome_preview_process.poll() is None:
         runtime.chrome_preview_process.terminate()
     return jsonify({"ok": True})
+
+
+def suggested_step_from_detection(detected: dict[str, Any], action: str, sensitive: bool = False) -> dict[str, Any]:
+    selectors = list(detected.get("selectors") or [])
+    preferred = selectors[0] if selectors else {"strategy": "position", "value": "", "score": 45}
+    position = detected.get("position") or {}
+    fallbacks = selectors[1:] + [{
+        "strategy": "position", "x_ratio": position.get("xRatio", 0.5),
+        "y_ratio": position.get("yRatio", 0.5), "score": 40,
+    }]
+    label = str(detected.get("label") or detected.get("text") or detected.get("placeholder") or detected.get("tag") or "רכיב").strip()
+    if len(label) > 120:
+        label = f"{label[:117].rstrip()}..."
+    is_secret = bool(detected.get("isSecret")) or sensitive
+    is_fill = action == "type_text" or bool(detected.get("isField") and action == "inspect")
+    if is_fill:
+        step_type = "fill_secret" if is_secret else "smart_fill"
+        name = "הזנת סיסמה" if is_secret else f"מילוי שדה: {label}"
+        value = "" if is_secret else "{TODO}"
+    else:
+        step_type = "smart_click"
+        name = f"לחיצה: {label}"
+        value = ""
+    return {
+        "name": name, "type": step_type, "scope": "once", "target": label, "value": value,
+        "timeout_seconds": 30, "enabled": True,
+        "locator": preferred, "fallbacks": fallbacks,
+        "page_url": str(detected.get("frameUrl") or ""),
+        "position": {"x_ratio": position.get("xRatio", 0.5), "y_ratio": position.get("yRatio", 0.5)},
+        "confidence": int(detected.get("confidence") or preferred.get("score") or 45),
+        "recorded_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+@app.post("/api/chrome/interact")
+def api_chrome_interact() -> Response:
+    payload = request.get_json(force=True) or {}
+    action = str(payload.get("action") or "")
+    allowed = {"click", "double_click", "inspect", "scroll", "type_text", "key", "reload", "back", "forward"}
+    if action not in allowed:
+        return jsonify({"ok": False, "error": "פעולת דפדפן לא מוכרת"}), 400
+    clean_payload = {
+        "action": action,
+        "x_ratio": max(0.0, min(1.0, float(payload.get("x_ratio") or 0.5))),
+        "y_ratio": max(0.0, min(1.0, float(payload.get("y_ratio") or 0.5))),
+        "delta_x": float(payload.get("delta_x") or 0),
+        "delta_y": float(payload.get("delta_y") or 0),
+        "key": str(payload.get("key") or "")[:50],
+        "text": str(payload.get("text") or "")[:5000],
+    }
+    try:
+        result = runtime.chrome_interact(clean_payload)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    if not result.get("ok"):
+        return jsonify(result), 400
+    detected = result.get("detected")
+    if payload.get("record") and isinstance(detected, dict):
+        result["suggested_step"] = suggested_step_from_detection(
+            detected, action, bool(payload.get("sensitive"))
+        )
+        if not payload.get("sensitive") and action in {"click", "double_click", "inspect"}:
+            with runtime.lock:
+                frame = runtime.chrome_preview_frame
+            if frame:
+                folder = ROOT_DIR / "screenshots" / "learning"
+                folder.mkdir(parents=True, exist_ok=True)
+                path = folder / f"learn_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
+                path.write_bytes(frame)
+                result["learning_screenshot"] = str(path.resolve())
+    result.pop("id", None)
+    return jsonify(result)
 
 
 @app.post("/api/chrome/preview/toggle")

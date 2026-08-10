@@ -36,13 +36,35 @@ RECORDER_SCRIPT = r"""
     ""
   ).replace(/\s+/g, " ").trim().slice(0, 180);
 
+  const descriptorFor = (el) => {
+    const text = visibleName(el);
+    const label = labelFor(el);
+    const placeholder = (el.getAttribute("placeholder") || "").trim();
+    const nativeRole = el.tagName === "A" ? "link" : el.tagName === "BUTTON" ? "button" :
+      el.tagName === "SELECT" ? "combobox" : (el.tagName === "INPUT" || el.tagName === "TEXTAREA") ? "textbox" : "";
+    const role = el.getAttribute("role") || nativeRole;
+    const selectors = [];
+    const add = (strategy, value, score, extra={}) => { if (value && !selectors.some(item => item.strategy === strategy && item.value === value)) selectors.push({strategy,value,score,...extra}); };
+    if (label) add("label", label, 98);
+    if (role && text) add("role", text, role === "button" || role === "link" ? 96 : 88, {role});
+    if (placeholder) add("placeholder", placeholder, 92);
+    const testId = el.getAttribute("data-testid") || el.getAttribute("data-test-id") || el.getAttribute("data-qa");
+    if (testId) add("testid", testId, 94);
+    if (el.id && !/\d{5,}/.test(el.id)) add("css", `#${CSS.escape(el.id)}`, 90);
+    if (el.name && !/\d{5,}/.test(el.name)) add("css", `${el.tagName.toLowerCase()}[name="${CSS.escape(el.name)}"]`, 84);
+    if (text) add("text", text, 78);
+    const rect = el.getBoundingClientRect();
+    return {text,label,placeholder,role,selectors:selectors.sort((a,b)=>b.score-a.score),
+      position:{x_ratio:(rect.left+rect.width/2)/innerWidth,y_ratio:(rect.top+rect.height/2)/innerHeight}};
+  };
+
   document.addEventListener("click", (event) => {
     const el = event.target.closest("button, a, [role='button'], input[type='button'], input[type='submit']");
     if (!el) return;
     const role = el.getAttribute("role") || (el.tagName === "A" ? "link" : "button");
     const name = visibleName(el);
     if (!name) return;
-    window.__mavatRecordedActions.push({kind: "click", role, name, url: location.href, at: Date.now()});
+    window.__mavatRecordedActions.push({kind: "click", role, name, ...descriptorFor(el), url: location.href, at: Date.now()});
   }, true);
 
   document.addEventListener("change", (event) => {
@@ -53,6 +75,7 @@ RECORDER_SCRIPT = r"""
       kind: el instanceof HTMLSelectElement ? "select" : "fill",
       label: labelFor(el),
       secret: fieldType === "password",
+      ...descriptorFor(el),
       url: location.href,
       at: Date.now()
     });
@@ -85,27 +108,39 @@ class BrowserRecorder:
     @staticmethod
     def _to_step(event: dict[str, Any]) -> dict[str, Any]:
         kind = event.get("kind")
+        selectors = list(event.get("selectors") or [])
+        preferred = selectors[0] if selectors else {"strategy": "position", "score": 45}
+        position = event.get("position") or {}
+        fallbacks = selectors[1:] + [{
+            "strategy": "position", "x_ratio": position.get("x_ratio", 0.5),
+            "y_ratio": position.get("y_ratio", 0.5), "score": 40,
+        }]
+        common = {
+            "locator": preferred, "fallbacks": fallbacks, "page_url": event.get("url", ""),
+            "position": position, "confidence": int(preferred.get("score") or 45),
+        }
         if kind == "click":
-            role = event.get("role") or "button"
             return {
                 "name": f"לחיצה: {event.get('name', '')}",
-                "type": "click_role",
+                "type": "smart_click",
                 "scope": "once",
                 "target": event.get("name", ""),
-                "value": role,
+                "value": "",
                 "timeout_seconds": 30,
                 "enabled": True,
+                **common,
             }
         if kind == "fill":
             secret = bool(event.get("secret"))
             return {
                 "name": "הזנת סיסמה" if secret else f"מילוי שדה: {event.get('label', '')}",
-                "type": "fill_secret" if secret else "fill_label",
+                "type": "fill_secret" if secret else "smart_fill",
                 "scope": "once",
                 "target": event.get("label", ""),
                 "value": "" if secret else "{TODO}",
                 "timeout_seconds": 30,
                 "enabled": True,
+                **common,
             }
         return {
             "name": f"בחירה בשדה: {event.get('label', '')}",

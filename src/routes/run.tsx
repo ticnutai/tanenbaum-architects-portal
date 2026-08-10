@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Camera,
@@ -10,18 +10,24 @@ import {
   EyeOff,
   FileSpreadsheet,
   Focus,
+  Keyboard,
+  LockKeyhole,
   Maximize2,
   Minimize2,
   Monitor,
+  MousePointer2,
   Pause,
   Play,
+  Redo2,
   RefreshCw,
+  Save,
   Square,
   Terminal,
   TestTube2,
   Wifi,
   WifiOff,
   X,
+  Undo2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/page-header";
@@ -37,6 +43,7 @@ import {
   type RunState,
   type SettingsData,
   type WorkflowData,
+  type WorkflowStep,
 } from "@/lib/mavat-api";
 
 export const Route = createFileRoute("/run")({ component: RunPage });
@@ -453,6 +460,12 @@ function RunPage() {
   );
 }
 
+type SmartCandidate = {
+  detected?: { confidence?: number; text?: string; label?: string; role?: string };
+  suggested_step?: WorkflowStep;
+  learning_screenshot?: string;
+};
+
 function LivePreview({
   live,
   full,
@@ -469,6 +482,81 @@ function LivePreview({
   onFocus: () => void;
 }) {
   const preview = live?.chrome.preview;
+  const imageRef = useRef<HTMLImageElement>(null);
+  const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [control, setControl] = useState(false);
+  const [learning, setLearning] = useState(false);
+  const [inspectNext, setInspectNext] = useState(false);
+  const [typing, setTyping] = useState("");
+  const [sensitive, setSensitive] = useState(false);
+  const [candidate, setCandidate] = useState<SmartCandidate | null>(null);
+  const [working, setWorking] = useState(false);
+
+  const interact = async (payload: Record<string, unknown>) => {
+    setWorking(true);
+    try {
+      const result = await mavatApi<SmartCandidate & { ok: boolean }>("/api/chrome/interact", {
+        method: "POST",
+        body: JSON.stringify({
+          ...payload,
+          record: learning || payload.action === "inspect",
+          sensitive,
+        }),
+      });
+      if (result.suggested_step) setCandidate(result);
+      return result;
+    } catch (error) {
+      toast.error((error as Error).message);
+    } finally {
+      setWorking(false);
+    }
+  };
+  const coordinates = (clientX: number, clientY: number) => {
+    const image = imageRef.current;
+    if (!image) return null;
+    const rect = image.getBoundingClientRect();
+    const naturalRatio = image.naturalWidth / Math.max(1, image.naturalHeight);
+    const boxRatio = rect.width / Math.max(1, rect.height);
+    const shownWidth = naturalRatio > boxRatio ? rect.width : rect.height * naturalRatio;
+    const shownHeight = naturalRatio > boxRatio ? rect.width / naturalRatio : rect.height;
+    const left = rect.left + (rect.width - shownWidth) / 2;
+    const top = rect.top + (rect.height - shownHeight) / 2;
+    return {
+      x_ratio: Math.max(0, Math.min(1, (clientX - left) / shownWidth)),
+      y_ratio: Math.max(0, Math.min(1, (clientY - top) / shownHeight)),
+    };
+  };
+  const clickImage = (event: React.MouseEvent<HTMLImageElement>) => {
+    if (!control && !learning && !inspectNext) return;
+    const point = coordinates(event.clientX, event.clientY);
+    if (!point) return;
+    if (clickTimer.current) clearTimeout(clickTimer.current);
+    clickTimer.current = setTimeout(() => {
+      interact({ action: inspectNext ? "inspect" : "click", ...point });
+      setInspectNext(false);
+    }, 230);
+  };
+  const doubleClickImage = (event: React.MouseEvent<HTMLImageElement>) => {
+    if (!control && !learning) return;
+    if (clickTimer.current) clearTimeout(clickTimer.current);
+    const point = coordinates(event.clientX, event.clientY);
+    if (point) interact({ action: "double_click", ...point });
+  };
+  const saveCandidate = async () => {
+    if (!candidate?.suggested_step) return;
+    await mavatApi("/api/steps", {
+      method: "POST",
+      body: JSON.stringify({ step: candidate.suggested_step }),
+    });
+    toast.success("הפעולה נוספה לסוף שלבי העבודה");
+    setCandidate(null);
+  };
+  const sendText = async () => {
+    if (!typing) return;
+    await interact({ action: "type_text", text: typing });
+    setTyping("");
+  };
+
   return (
     <Card
       className={
@@ -484,20 +572,37 @@ function LivePreview({
               <span
                 className={`size-2.5 rounded-full ${live?.chrome.connected ? "animate-pulse bg-emerald-500" : "bg-destructive"}`}
               />
-              תצוגת Chrome חיה
+              תצוגת Chrome אינטראקטיבית
             </CardTitle>
             <CardDescription className={full ? "text-slate-400" : ""}>
               {preview?.title || "ממתין לחיבור לדפדפן"}
             </CardDescription>
           </div>
           <div className="flex flex-wrap gap-2">
+            <Button
+              variant={control ? "default" : "outline"}
+              size="sm"
+              onClick={() => setControl((value) => !value)}
+            >
+              <MousePointer2 className="size-4" />
+              {control ? "שליטה פעילה" : "אפשר שליטה"}
+            </Button>
+            <Button
+              variant={learning ? "destructive" : "outline"}
+              size="sm"
+              onClick={() => {
+                setLearning((value) => !value);
+                setControl(true);
+              }}
+            >
+              <span
+                className={`size-2 rounded-full ${learning ? "animate-pulse bg-white" : "bg-destructive"}`}
+              />
+              {learning ? "מקליט פעולות" : "מצב לימוד"}
+            </Button>
             <Button variant="outline" size="sm" onClick={onToggle}>
               {preview?.enabled ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-              {preview?.enabled ? "הסתר וכבה צילום" : "הפעל תצוגה"}
-            </Button>
-            <Button variant="outline" size="sm" onClick={onFocus}>
-              <Focus className="size-4" />
-              Chrome
+              {preview?.enabled ? "הסתר" : "הצג"}
             </Button>
             <Button variant="outline" size="icon" onClick={onFull}>
               {full ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
@@ -505,6 +610,30 @@ function LivePreview({
           </div>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            size="icon"
+            title="אחורה"
+            onClick={() => interact({ action: "back" })}
+          >
+            <Undo2 className="size-4" />
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
+            title="קדימה"
+            onClick={() => interact({ action: "forward" })}
+          >
+            <Redo2 className="size-4" />
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
+            title="רענון"
+            onClick={() => interact({ action: "reload" })}
+          >
+            <RefreshCw className="size-4" />
+          </Button>
           <select
             className={`h-9 min-w-0 flex-1 rounded-md border px-3 text-sm ${full ? "border-slate-700 bg-slate-900" : "bg-background"}`}
             value={preview?.target_id || ""}
@@ -517,14 +646,63 @@ function LivePreview({
               </option>
             ))}
           </select>
+          <Button
+            variant={inspectNext ? "default" : "outline"}
+            size="sm"
+            onClick={() => {
+              setInspectNext(true);
+              setControl(true);
+            }}
+          >
+            <Focus className="size-4" />
+            סמן רכיב
+          </Button>
+          <Button variant="outline" size="sm" onClick={onFocus}>
+            <Chrome className="size-4" />
+            Chrome
+          </Button>
           {preview?.available && (
             <Button variant="outline" size="sm" asChild>
               <a href="/api/chrome/preview.jpg?download=1">
                 <Download className="size-4" />
-                שמור צילום
+                צילום
               </a>
             </Button>
           )}
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <input
+            className={`h-9 min-w-48 flex-1 rounded-md border px-3 text-sm ${full ? "border-slate-700 bg-slate-900" : "bg-background"}`}
+            type={sensitive ? "password" : "text"}
+            value={typing}
+            onChange={(event) => setTyping(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") sendText();
+            }}
+            placeholder="הקלדה לשדה הפעיל..."
+          />
+          <Button size="sm" onClick={sendText} disabled={!typing || working}>
+            <Keyboard className="size-4" />
+            הקלד
+          </Button>
+          <Button
+            variant={sensitive ? "destructive" : "outline"}
+            size="sm"
+            onClick={() => setSensitive((value) => !value)}
+          >
+            <LockKeyhole className="size-4" />
+            {sensitive ? "מידע רגיש" : "רגיל"}
+          </Button>
+          {["Tab", "Enter", "Backspace", "Escape"].map((key) => (
+            <Button
+              key={key}
+              variant="outline"
+              size="sm"
+              onClick={() => interact({ action: "key", key })}
+            >
+              {key}
+            </Button>
+          ))}
         </div>
         {preview?.url && (
           <div
@@ -545,12 +723,23 @@ function LivePreview({
       </CardHeader>
       <CardContent
         className={`relative grid place-items-center p-0 ${full ? "min-h-0 flex-1" : "aspect-video bg-slate-950"}`}
+        onWheel={(event) => {
+          if (!control && !learning) return;
+          event.preventDefault();
+          const point = coordinates(event.clientX, event.clientY);
+          if (point)
+            interact({ action: "scroll", ...point, delta_y: event.deltaY, delta_x: event.deltaX });
+        }}
       >
         {preview?.enabled && preview.available ? (
           <img
-            className="h-full w-full object-contain"
+            ref={imageRef}
+            className={`h-full w-full object-contain ${control || learning || inspectNext ? "cursor-crosshair" : ""}`}
             src={`/api/chrome/preview.jpg?v=${preview.frames}`}
             alt="תצוגה חיה של Chrome"
+            draggable={false}
+            onClick={clickImage}
+            onDoubleClick={doubleClickImage}
           />
         ) : (
           <div className="p-10 text-center text-slate-400">
@@ -558,7 +747,6 @@ function LivePreview({
               <>
                 <Monitor className="mx-auto mb-4 size-12 opacity-40" />
                 <p>{preview.error || "מפעיל תצוגה חיה..."}</p>
-                <p className="mt-2 text-xs">פתח את Chrome או בחר לשונית מהרשימה.</p>
               </>
             ) : (
               <>
@@ -571,10 +759,33 @@ function LivePreview({
         {preview?.enabled && preview.available && (
           <div className="absolute bottom-3 right-3 flex items-center gap-2 rounded-full bg-black/70 px-3 py-1.5 text-xs text-white">
             <span className="size-2 animate-pulse rounded-full bg-red-500" />
-            חי
+            {working ? "מבצע..." : learning ? "חי · לימוד" : control ? "חי · שליטה" : "חי"}
           </div>
         )}
       </CardContent>
+      {candidate?.suggested_step && (
+        <div className={`border-t p-4 ${full ? "border-slate-700 bg-slate-900" : "bg-accent/5"}`}>
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-xs text-muted-foreground">
+                פעולה שנקלטה · אמינות {candidate.suggested_step.confidence || 0}%
+              </p>
+              <strong className="block truncate">{candidate.suggested_step.name}</strong>
+              <p className="truncate text-xs text-muted-foreground">
+                {candidate.suggested_step.type} · {candidate.suggested_step.target}
+              </p>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => setCandidate(null)}>
+              <X className="size-4" />
+              התעלם
+            </Button>
+            <Button size="sm" onClick={saveCandidate}>
+              <Save className="size-4" />
+              שמור כשלב
+            </Button>
+          </div>
+        </div>
+      )}
     </Card>
   );
 }

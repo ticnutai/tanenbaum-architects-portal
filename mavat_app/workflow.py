@@ -116,7 +116,7 @@ class WorkflowRunner:
             if self.stop_event.is_set():
                 self.callbacks.finished("נעצר")
                 return
-            for step in self.workflow["steps"]:
+            for fallback_number, step in enumerate(self.workflow["steps"], start=1):
                 if not step.get("enabled", True):
                     continue
                 self._wait_if_paused()
@@ -125,7 +125,8 @@ class WorkflowRunner:
                     return
                 if step.get("scope", "per_record") == "once" and index > 1:
                     continue
-                self.callbacks.log(f"שורה {index}: {self._describe(step, row)}")
+                step_number = int(step.get("_original_step_number") or fallback_number)
+                self.callbacks.log(f"שורה {index}, שלב {step_number}: {self._describe(step, row)}")
             self.callbacks.status(index, "בדיקה", "השלבים אומתו ללא שליחה")
         self.callbacks.finished("בדיקת השלבים הסתיימה")
 
@@ -180,7 +181,8 @@ class WorkflowRunner:
                         if self.stop_event.is_set():
                             break
                         self.callbacks.status(index, "בביצוע", "")
-                        for step_number, step in enumerate(self.workflow["steps"], start=1):
+                        for fallback_number, step in enumerate(self.workflow["steps"], start=1):
+                            step_number = int(step.get("_original_step_number") or fallback_number)
                             if self.stop_event.is_set():
                                 break
                             self._wait_if_paused()
@@ -237,13 +239,52 @@ class WorkflowRunner:
             self.callbacks.log(f"שגיאה: {exc}")
             self.callbacks.finished("ההרצה נכשלה")
 
+    def _smart_action(self, page: Any, step: dict[str, Any], row: dict[str, Any], timeout: int, fill_value: str | None = None) -> Any:
+        candidates = [step.get("locator") or {}, *(step.get("fallbacks") or [])]
+        last_error: Exception | None = None
+        for candidate in candidates:
+            strategy = str(candidate.get("strategy") or "")
+            candidate_value = self._resolved(candidate.get("value", ""), row)
+            try:
+                if strategy == "position":
+                    viewport = page.viewport_size or page.evaluate("() => ({width: innerWidth, height: innerHeight})")
+                    x = float(candidate.get("x_ratio", 0.5)) * float(viewport["width"])
+                    y = float(candidate.get("y_ratio", 0.5)) * float(viewport["height"])
+                    page.mouse.click(x, y)
+                    if fill_value is not None:
+                        page.keyboard.insert_text(fill_value)
+                    return page
+                if strategy == "role":
+                    locator = page.get_by_role(str(candidate.get("role") or "button"), name=candidate_value, exact=False)
+                elif strategy == "label":
+                    locator = page.get_by_label(candidate_value, exact=False)
+                elif strategy == "placeholder":
+                    locator = page.get_by_placeholder(candidate_value, exact=False)
+                elif strategy == "testid":
+                    locator = page.get_by_test_id(candidate_value)
+                elif strategy == "text":
+                    locator = page.get_by_text(candidate_value, exact=False)
+                elif strategy == "css":
+                    locator = page.locator(candidate_value)
+                else:
+                    continue
+                locator.first.wait_for(state="visible", timeout=min(timeout, 5000))
+                if fill_value is None:
+                    locator.first.click(timeout=timeout)
+                else:
+                    locator.first.fill(fill_value, timeout=timeout)
+                return page
+            except Exception as exc:
+                last_error = exc
+        raise RuntimeError(f"לא נמצא רכיב לפי המזהים השמורים: {last_error or step.get('target', '')}")
+
     def _execute_step(self, page: Any, step: dict[str, Any], row: dict[str, Any]) -> Any:
         action = step.get("type", "noop")
         target = self._resolved(step.get("target", ""), row)
         value = self._resolved(step.get("value", ""), row)
         timeout = int(step.get("timeout_seconds", 30)) * 1000
 
-        if action in {"fill_label", "fill_placeholder"} and re.search(r"\{(?:TODO|[^{}]+)\}", value):
+        if action in {"fill_label", "fill_placeholder", "smart_fill"} and re.search(r"\{(?:TODO|[^{}]+)\}", value):
             raise RuntimeError(f"הערך '{value}' לא מופה לנתון אמיתי")
 
         if action == "noop":
@@ -280,7 +321,13 @@ class WorkflowRunner:
             secret = self.secrets_by_profile.get(profile_id, "") or self.password
             if not secret:
                 raise RuntimeError("לא נשמרה סיסמה לפרופיל המקושר לשלב")
+            if step.get("locator") or step.get("fallbacks"):
+                return self._smart_action(page, step, row, timeout, secret)
             page.get_by_label(target, exact=False).first.fill(secret, timeout=timeout)
+        elif action in {"smart_click", "smart_fill"}:
+            if action == "smart_fill" and not value:
+                raise RuntimeError("לא הוגדר ערך למילוי החכם")
+            return self._smart_action(page, step, row, timeout, value if action == "smart_fill" else None)
         elif action == "wait_url":
             page.wait_for_url(re.compile(target or value), timeout=timeout)
         elif action == "wait_text":

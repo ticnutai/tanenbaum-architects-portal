@@ -9,6 +9,19 @@ export type WorkflowStep = {
   enabled?: boolean;
   credential_profile_id?: string;
   _secret_status?: "saved" | "missing";
+  locator?: { strategy: string; value?: string; score?: number; role?: string };
+  fallbacks?: Array<{
+    strategy: string;
+    value?: string;
+    score?: number;
+    role?: string;
+    x_ratio?: number;
+    y_ratio?: number;
+  }>;
+  page_url?: string;
+  position?: { x_ratio: number; y_ratio: number };
+  confidence?: number;
+  recorded_at?: string;
 };
 export type WorkflowData = {
   workflow: { name: string; steps: WorkflowStep[] };

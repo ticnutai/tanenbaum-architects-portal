@@ -1,6 +1,19 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Circle, GripVertical, KeyRound, Pause, Play, Plus, Radio, Search, Square, Trash2 } from "lucide-react";
+import {
+  Circle,
+  CopyPlus,
+  GripVertical,
+  KeyRound,
+  Layers3,
+  Pause,
+  Play,
+  Plus,
+  Radio,
+  Search,
+  Square,
+  Trash2,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/page-header";
@@ -8,64 +21,754 @@ import { AutomationContext } from "@/components/automation-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { mavatApi, type WorkflowData, type WorkflowStep } from "@/lib/mavat-api";
 
 export const Route = createFileRoute("/workflow")({ component: WorkflowPage });
-const actions = ["goto","click_text","click_role","fill_label","fill_placeholder","fill_secret","wait_url","wait_text","manual","screenshot","delay","noop"];
-const emptyStep: WorkflowStep = { name: "", type: "click_text", scope: "once", target: "", value: "", timeout_seconds: 30, enabled: true };
+const actions = [
+  "goto",
+  "smart_click",
+  "smart_fill",
+  "click_text",
+  "click_role",
+  "fill_label",
+  "fill_placeholder",
+  "fill_secret",
+  "wait_url",
+  "wait_text",
+  "manual",
+  "screenshot",
+  "delay",
+  "noop",
+];
+const emptyStep: WorkflowStep = {
+  name: "",
+  type: "click_text",
+  scope: "once",
+  target: "",
+  value: "",
+  timeout_seconds: 30,
+  enabled: true,
+};
+type LibraryAutomation = { id: string; name: string; description: string; steps: WorkflowStep[] };
+type LibraryData = { automations: LibraryAutomation[]; active_id: string };
 
 function WorkflowPage() {
-  const [data,setData]=useState<WorkflowData>({ workflow:{name:"",steps:[]}, profiles:{} });
-  const [recording,setRecording]=useState({state:"idle",message:"ההקלטה כבויה"});
-  const [selected,setSelected]=useState<Set<number>>(new Set());
-  const [query,setQuery]=useState(""); const [filter,setFilter]=useState("all");
-  const [editor,setEditor]=useState<{index:number|null;step:WorkflowStep}|null>(null);
-  const [secretIndex,setSecretIndex]=useState<number|null>(null);
-  const dragged=useRef<number|null>(null); const lastSelected=useRef<number|null>(null);
-  const load=async()=>setData(await mavatApi<WorkflowData>("/api/workflow"));
-  const poll=async()=>setRecording(await mavatApi("/api/recording/status"));
-  useEffect(()=>{load().catch(e=>toast.error(e.message));poll();const timer=setInterval(()=>{poll();if(recording.state==="recording")load()},1500);return()=>clearInterval(timer)},[recording.state]);
-  const visible=useMemo(()=>data.workflow.steps.map((step,index)=>({step,index})).filter(({step})=>{
-    const text=`${step.name} ${step.type} ${step.target||""} ${step.value||""}`.toLowerCase();
-    return text.includes(query.toLowerCase())&&(filter==="all"||(filter==="active"&&step.enabled!==false)||(filter==="paused"&&step.enabled===false)||(filter==="secret"&&step.type==="fill_secret"));
-  }),[data,query,filter]);
+  const [data, setData] = useState<WorkflowData>({
+    workflow: { name: "", steps: [] },
+    profiles: {},
+  });
+  const [recording, setRecording] = useState({ state: "idle", message: "ההקלטה כבויה" });
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [editor, setEditor] = useState<{ index: number | null; step: WorkflowStep } | null>(null);
+  const [secretIndex, setSecretIndex] = useState<number | null>(null);
+  const [library, setLibrary] = useState<LibraryData>({ automations: [], active_id: "" });
+  const [importing, setImporting] = useState(false);
+  const [sourceId, setSourceId] = useState("");
+  const [sourceSelected, setSourceSelected] = useState<Set<number>>(new Set());
+  const dragged = useRef<number | null>(null);
+  const lastSelected = useRef<number | null>(null);
+  const load = async () => setData(await mavatApi<WorkflowData>("/api/workflow"));
+  const poll = async () => setRecording(await mavatApi("/api/recording/status"));
+  useEffect(() => {
+    load().catch((e) => toast.error(e.message));
+    poll();
+    const timer = setInterval(() => {
+      poll();
+      if (recording.state === "recording") load();
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [recording.state]);
+  const visible = useMemo(
+    () =>
+      data.workflow.steps
+        .map((step, index) => ({ step, index }))
+        .filter(({ step }) => {
+          const text =
+            `${step.name} ${step.type} ${step.target || ""} ${step.value || ""}`.toLowerCase();
+          return (
+            text.includes(query.toLowerCase()) &&
+            (filter === "all" ||
+              (filter === "active" && step.enabled !== false) ||
+              (filter === "paused" && step.enabled === false) ||
+              (filter === "secret" && step.type === "fill_secret"))
+          );
+        }),
+    [data, query, filter],
+  );
 
-  const select=(index:number,event:React.MouseEvent)=>{const next=new Set(selected);if(event.shiftKey&&lastSelected.current!==null){const [a,b]=[lastSelected.current,index].sort((x,y)=>x-y);for(let i=a;i<=b;i++)next.add(i)}else if(event.ctrlKey||event.metaKey){next.has(index)?next.delete(index):next.add(index);lastSelected.current=index}else{next.clear();next.add(index);lastSelected.current=index}setSelected(next)};
-  const bulk=async(action:string)=>{if(action==="delete"&&!confirm(`למחוק ${selected.size} פעולות?`))return;await mavatApi("/api/steps/bulk",{method:"POST",body:JSON.stringify({indices:[...selected],action})});setSelected(new Set());await load();toast.success("השינויים נשמרו")};
-  const reorder=async(target:number)=>{if(dragged.current===null||dragged.current===target)return;const order=data.workflow.steps.map((_,i)=>i);const [item]=order.splice(dragged.current,1);if(item===undefined)return;order.splice(target,0,item);await mavatApi("/api/steps/reorder",{method:"POST",body:JSON.stringify({order})});dragged.current=null;await load();toast.success("סדר השלבים נשמר")};
-  const record=async(action:"start"|"stop")=>{const result=await mavatApi<{message:string}>(`/api/recording/${action}`,{method:"POST"});toast(result.message);await poll()};
+  const select = (index: number, event: React.MouseEvent) => {
+    const next = new Set(selected);
+    if (event.shiftKey && lastSelected.current !== null) {
+      const [a, b] = [lastSelected.current, index].sort((x, y) => x - y);
+      for (let i = a; i <= b; i++) next.add(i);
+    } else if (event.ctrlKey || event.metaKey) {
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      lastSelected.current = index;
+    } else {
+      next.clear();
+      next.add(index);
+      lastSelected.current = index;
+    }
+    setSelected(next);
+  };
+  const bulk = async (action: string) => {
+    if (action === "delete" && !confirm(`למחוק ${selected.size} פעולות?`)) return;
+    await mavatApi("/api/steps/bulk", {
+      method: "POST",
+      body: JSON.stringify({ indices: [...selected], action }),
+    });
+    setSelected(new Set());
+    await load();
+    toast.success("השינויים נשמרו");
+  };
+  const reorder = async (target: number) => {
+    if (dragged.current === null || dragged.current === target) return;
+    const order = data.workflow.steps.map((_, i) => i);
+    const [item] = order.splice(dragged.current, 1);
+    if (item === undefined) return;
+    order.splice(target, 0, item);
+    await mavatApi("/api/steps/reorder", { method: "POST", body: JSON.stringify({ order }) });
+    dragged.current = null;
+    await load();
+    toast.success("סדר השלבים נשמר");
+  };
+  const record = async (action: "start" | "stop") => {
+    const result = await mavatApi<{ message: string }>(`/api/recording/${action}`, {
+      method: "POST",
+    });
+    toast(result.message);
+    await poll();
+  };
+  const openLibrary = async () => {
+    const value = await mavatApi<LibraryData>("/api/automations/library");
+    setLibrary(value);
+    const first =
+      value.automations.find((item) => item.id !== value.active_id) || value.automations[0];
+    setSourceId(first?.id || "");
+    setSourceSelected(new Set());
+    setImporting(true);
+  };
+  const importSteps = async () => {
+    const position = selected.size ? Math.max(...selected) + 1 : data.workflow.steps.length;
+    await mavatApi("/api/steps/import", {
+      method: "POST",
+      body: JSON.stringify({ source_id: sourceId, indices: [...sourceSelected], position }),
+    });
+    setImporting(false);
+    setSelected(new Set());
+    await load();
+    toast.success(`${sourceSelected.size} שלבים יובאו`);
+  };
+  const runIndices = async (indices: number[]) => {
+    const profileId = Object.keys(data.profiles)[0];
+    if (!profileId) {
+      toast.error("יש להגדיר פרופיל כניסה לפני הרצה");
+      return;
+    }
+    if (!confirm(`להריץ כעת ${indices.length} שלבים ב-Chrome?`)) return;
+    try {
+      await mavatApi("/api/run/start", {
+        method: "POST",
+        body: JSON.stringify({ profile_id: profileId, dry_run: false, step_indices: indices }),
+      });
+      toast.success("הרצת השלבים התחילה");
+    } catch (error) {
+      toast.error((error as Error).message);
+    }
+  };
+  const createFromSelected = async () => {
+    const name = prompt("שם האוטומציה החדשה:");
+    if (!name) return;
+    try {
+      await mavatApi("/api/automations/from-steps", {
+        method: "POST",
+        body: JSON.stringify({ name, selections: [{ automation_id: "", indices: [...selected] }] }),
+      });
+      toast.success("האוטומציה החדשה נוצרה מהשלבים שבחרת");
+    } catch (error) {
+      toast.error((error as Error).message);
+    }
+  };
 
-  return <div className="mx-auto max-w-6xl space-y-8">
-    <AutomationContext/>
-    <PageHeader eyebrow="תהליך" title="שלבי עבודה" description="ערוך, הוסף וסדר את פעולות האתר. ההקלטה קולטת לחיצות ושדות מ-Chrome אך אינה שומרת ערכי סיסמה."
-      actions={<><Button variant="outline" onClick={()=>record("start")} disabled={["recording","connecting"].includes(recording.state)}><Radio className="size-4"/>התחל הקלטה</Button><Button variant="outline" onClick={()=>record("stop")} disabled={!["recording","connecting"].includes(recording.state)}><Square className="size-4"/>עצור</Button><Button onClick={()=>setEditor({index:null,step:{...emptyStep}})}><Plus className="size-4"/>שלב חדש</Button></>}/>
+  return (
+    <div className="mx-auto max-w-6xl space-y-8">
+      <AutomationContext />
+      <PageHeader
+        eyebrow="תהליך"
+        title="שלבי עבודה"
+        description="ערוך, הוסף וסדר את פעולות האתר. ההקלטה קולטת לחיצות ושדות מ-Chrome אך אינה שומרת ערכי סיסמה."
+        actions={
+          <>
+            <Button variant="outline" onClick={openLibrary}>
+              <CopyPlus className="size-4" />
+              ייבוא שלבים
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => record("start")}
+              disabled={["recording", "connecting"].includes(recording.state)}
+            >
+              <Radio className="size-4" />
+              התחל הקלטה
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => record("stop")}
+              disabled={!["recording", "connecting"].includes(recording.state)}
+            >
+              <Square className="size-4" />
+              עצור
+            </Button>
+            <Button onClick={() => setEditor({ index: null, step: { ...emptyStep } })}>
+              <Plus className="size-4" />
+              שלב חדש
+            </Button>
+          </>
+        }
+      />
 
-    <Card className={recording.state==="recording"?"border-destructive/40":""}><CardContent className="flex items-center gap-3 py-4"><span className={`size-2.5 rounded-full ${recording.state==="recording"?"animate-pulse bg-destructive":"bg-muted-foreground/50"}`}/><strong className="text-sm">{recording.message}</strong></CardContent></Card>
-    <Card><CardHeader><CardTitle className="font-display text-2xl">רשימת השלבים</CardTitle><CardDescription>גרור לשינוי סדר · Ctrl או Shift לבחירה מרובה · לחיצה כפולה לעריכה · Delete מוחק</CardDescription></CardHeader><CardContent>
-      <div className="mb-5 flex flex-wrap gap-2"><div className="relative min-w-64 flex-1"><Search className="absolute right-3 top-2.5 size-4 text-muted-foreground"/><Input className="pr-9" value={query} onChange={e=>setQuery(e.target.value)} placeholder="חיפוש פעולה, יעד או ערך..."/></div><select className="rounded-md border border-input bg-background px-3 text-sm" value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">כל השלבים</option><option value="active">פעילים</option><option value="paused">מושהים</option><option value="secret">סיסמאות</option></select><Badge variant="secondary" className="px-4">{data.workflow.steps.length} שלבים</Badge></div>
-      {selected.size>0&&<div className="mb-4 flex flex-wrap items-center gap-2 rounded-md border border-primary/20 bg-primary/5 p-3"><strong className="ms-auto text-sm">{selected.size} פעולות נבחרו</strong><Button size="sm" variant="outline" onClick={()=>bulk("pause")}><Pause className="size-4"/>השהה</Button><Button size="sm" variant="outline" onClick={()=>bulk("resume")}><Play className="size-4"/>הפעל</Button><Button size="sm" variant="destructive" onClick={()=>bulk("delete")}><Trash2 className="size-4"/>מחק</Button><Button size="sm" variant="ghost" onClick={()=>setSelected(new Set())}>בטל בחירה</Button></div>}
-      <div className="space-y-3">{visible.map(({step,index})=><div key={`${index}-${step.name}`} draggable onDragStart={()=>{dragged.current=index}} onDragOver={e=>e.preventDefault()} onDrop={()=>reorder(index)} onClick={e=>select(index,e)} onDoubleClick={()=>step.type==="fill_secret"?setSecretIndex(index):setEditor({index,step:{...step}})} className={`grid min-h-24 cursor-pointer grid-cols-[auto_auto_auto_1fr_auto] items-center gap-4 rounded-md border bg-card px-5 py-4 transition-all hover:-translate-y-0.5 hover:border-accent/60 hover:shadow-sm ${selected.has(index)?"border-primary ring-2 ring-primary/15":"border-border"} ${step.enabled===false?"opacity-50":""}`}>
-        <GripVertical className="size-5 cursor-grab text-muted-foreground"/><span className="w-7 text-center font-mono text-sm text-muted-foreground">{index+1}</span><Circle className={`size-2.5 ${step.enabled===false?"fill-muted-foreground text-muted-foreground":"fill-accent text-accent"}`}/><div className="min-w-0"><p className="truncate text-base font-semibold">{step.name}{step.enabled===false&&<Badge variant="outline" className="me-2">מושהה</Badge>}</p><p className="truncate text-sm text-muted-foreground">{step.type==="fill_secret"?(step._secret_status==="saved"?"סיסמה מאובטחת שמורה ב-Windows":"נדרשת הגדרת סיסמה"):step.value||step.target||(step.scope==="per_record"?"מבוצע לכל רשומה":"מבוצע פעם אחת")}</p></div><div className="flex items-center gap-3">{step.type==="fill_secret"&&<Button size="sm" variant="ghost" className={step._secret_status==="saved"?"text-emerald-700":"text-destructive"} onClick={e=>{e.stopPropagation();setSecretIndex(index)}}><KeyRound className="size-4"/>{step._secret_status==="saved"?"עריכת סיסמה":"הגדרת סיסמה"}</Button>}<Badge variant={step.type==="manual"?"destructive":"secondary"} className="direction-ltr px-3 py-2 font-mono">{step.type}</Badge></div>
-      </div>)}</div>{visible.length===0&&<div className="py-20 text-center text-muted-foreground">לא נמצאו שלבים להצגה</div>}
-    </CardContent></Card>
-    {editor&&<StepEditor model={editor} total={data.workflow.steps.length} selected={selected} onClose={()=>setEditor(null)} onSaved={async()=>{setEditor(null);setSelected(new Set());await load();toast.success("השלב נשמר")}}/>}
-    {secretIndex!==null&&<SecretEditor index={secretIndex} step={data.workflow.steps[secretIndex]!} profiles={data.profiles} onClose={()=>setSecretIndex(null)} onSaved={async()=>{setSecretIndex(null);await load();toast.success("פרטי הכניסה נשמרו")}}/>}
-  </div>;
+      <Card className={recording.state === "recording" ? "border-destructive/40" : ""}>
+        <CardContent className="flex items-center gap-3 py-4">
+          <span
+            className={`size-2.5 rounded-full ${recording.state === "recording" ? "animate-pulse bg-destructive" : "bg-muted-foreground/50"}`}
+          />
+          <strong className="text-sm">{recording.message}</strong>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle className="font-display text-2xl">רשימת השלבים</CardTitle>
+          <CardDescription>
+            גרור לשינוי סדר · Ctrl או Shift לבחירה מרובה · לחיצה כפולה לעריכה · Delete מוחק
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="mb-5 flex flex-wrap gap-2">
+            <div className="relative min-w-64 flex-1">
+              <Search className="absolute right-3 top-2.5 size-4 text-muted-foreground" />
+              <Input
+                className="pr-9"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="חיפוש פעולה, יעד או ערך..."
+              />
+            </div>
+            <select
+              className="rounded-md border border-input bg-background px-3 text-sm"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+            >
+              <option value="all">כל השלבים</option>
+              <option value="active">פעילים</option>
+              <option value="paused">מושהים</option>
+              <option value="secret">סיסמאות</option>
+            </select>
+            <Badge variant="secondary" className="px-4">
+              {data.workflow.steps.length} שלבים
+            </Badge>
+          </div>
+          {selected.size > 0 && (
+            <div className="mb-4 flex flex-wrap items-center gap-2 rounded-md border border-primary/20 bg-primary/5 p-3">
+              <strong className="ms-auto text-sm">{selected.size} פעולות נבחרו</strong>
+              <Button size="sm" onClick={() => runIndices([...selected])}>
+                <Play className="size-4" />
+                הרץ נבחרים
+              </Button>
+              <Button size="sm" variant="outline" onClick={createFromSelected}>
+                <Layers3 className="size-4" />
+                צור אוטומציה
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => bulk("pause")}>
+                <Pause className="size-4" />
+                השהה
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => bulk("resume")}>
+                <Play className="size-4" />
+                הפעל
+              </Button>
+              <Button size="sm" variant="destructive" onClick={() => bulk("delete")}>
+                <Trash2 className="size-4" />
+                מחק
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
+                בטל בחירה
+              </Button>
+            </div>
+          )}
+          <div className="space-y-3">
+            {visible.map(({ step, index }) => (
+              <div
+                key={`${index}-${step.name}`}
+                draggable
+                onDragStart={() => {
+                  dragged.current = index;
+                }}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={() => reorder(index)}
+                onClick={(e) => select(index, e)}
+                onDoubleClick={() =>
+                  step.type === "fill_secret"
+                    ? setSecretIndex(index)
+                    : setEditor({ index, step: { ...step } })
+                }
+                className={`grid min-h-24 cursor-pointer grid-cols-[auto_auto_auto_1fr_auto] items-center gap-4 rounded-md border bg-card px-5 py-4 transition-all hover:-translate-y-0.5 hover:border-accent/60 hover:shadow-sm ${selected.has(index) ? "border-primary ring-2 ring-primary/15" : "border-border"} ${step.enabled === false ? "opacity-50" : ""}`}
+              >
+                <GripVertical className="size-5 cursor-grab text-muted-foreground" />
+                <span className="w-7 text-center font-mono text-sm text-muted-foreground">
+                  {index + 1}
+                </span>
+                <Circle
+                  className={`size-2.5 ${step.enabled === false ? "fill-muted-foreground text-muted-foreground" : "fill-accent text-accent"}`}
+                />
+                <div className="min-w-0">
+                  <p className="truncate text-base font-semibold">
+                    {step.name}
+                    {step.enabled === false && (
+                      <Badge variant="outline" className="me-2">
+                        מושהה
+                      </Badge>
+                    )}
+                  </p>
+                  <p className="truncate text-sm text-muted-foreground">
+                    {step.type === "fill_secret"
+                      ? step._secret_status === "saved"
+                        ? "סיסמה מאובטחת שמורה ב-Windows"
+                        : "נדרשת הגדרת סיסמה"
+                      : step.value ||
+                        step.target ||
+                        (step.scope === "per_record" ? "מבוצע לכל רשומה" : "מבוצע פעם אחת")}
+                    {step.confidence ? ` · אמינות ${step.confidence}%` : ""}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    title="הרץ שלב זה"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      runIndices([index]);
+                    }}
+                  >
+                    <Play className="size-4" />
+                  </Button>
+                  {step.type === "fill_secret" && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className={
+                        step._secret_status === "saved" ? "text-emerald-700" : "text-destructive"
+                      }
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSecretIndex(index);
+                      }}
+                    >
+                      <KeyRound className="size-4" />
+                      {step._secret_status === "saved" ? "עריכת סיסמה" : "הגדרת סיסמה"}
+                    </Button>
+                  )}
+                  <Badge
+                    variant={step.type === "manual" ? "destructive" : "secondary"}
+                    className="direction-ltr px-3 py-2 font-mono"
+                  >
+                    {step.type}
+                  </Badge>
+                </div>
+              </div>
+            ))}
+          </div>
+          {visible.length === 0 && (
+            <div className="py-20 text-center text-muted-foreground">לא נמצאו שלבים להצגה</div>
+          )}
+        </CardContent>
+      </Card>
+      {editor && (
+        <StepEditor
+          model={editor}
+          total={data.workflow.steps.length}
+          selected={selected}
+          onClose={() => setEditor(null)}
+          onSaved={async () => {
+            setEditor(null);
+            setSelected(new Set());
+            await load();
+            toast.success("השלב נשמר");
+          }}
+        />
+      )}
+      {secretIndex !== null && (
+        <SecretEditor
+          index={secretIndex}
+          step={data.workflow.steps[secretIndex]!}
+          profiles={data.profiles}
+          onClose={() => setSecretIndex(null)}
+          onSaved={async () => {
+            setSecretIndex(null);
+            await load();
+            toast.success("פרטי הכניסה נשמרו");
+          }}
+        />
+      )}
+      {importing && (
+        <ImportStepsDialog
+          library={library}
+          sourceId={sourceId}
+          setSourceId={(value) => {
+            setSourceId(value);
+            setSourceSelected(new Set());
+          }}
+          selected={sourceSelected}
+          setSelected={setSourceSelected}
+          onClose={() => setImporting(false)}
+          onImport={importSteps}
+        />
+      )}
+    </div>
+  );
 }
 
-function StepEditor({model,total,selected,onClose,onSaved}:{model:{index:number|null;step:WorkflowStep};total:number;selected:Set<number>;onClose:()=>void;onSaved:()=>void}){
-  const [step,setStep]=useState(model.step);const save=async()=>{if(!step.name.trim()){toast.error("יש להזין שם פעולה");return}if(model.index===null){await mavatApi("/api/steps",{method:"POST",body:JSON.stringify({position:selected.size?Math.max(...selected)+1:total,step})})}else{await mavatApi(`/api/steps/${model.index}`,{method:"PUT",body:JSON.stringify(step)})}onSaved()};
-  return <Dialog open onOpenChange={v=>!v&&onClose()}><DialogContent className="max-w-2xl" dir="rtl"><DialogHeader><DialogTitle className="font-display text-2xl">{model.index===null?"פעולה חדשה":"עריכת פעולה"}</DialogTitle><DialogDescription>הגדרת סוג הפעולה, היעד והערך שימולא.</DialogDescription></DialogHeader><div className="grid grid-cols-2 gap-4"><Field label="שם הפעולה" wide><Input value={step.name} onChange={e=>setStep({...step,name:e.target.value})}/></Field><Field label="סוג פעולה"><select className="h-9 w-full rounded-md border bg-background px-3" value={step.type} onChange={e=>setStep({...step,type:e.target.value})}>{actions.map(x=><option key={x}>{x}</option>)}</select></Field><Field label="היקף"><select className="h-9 w-full rounded-md border bg-background px-3" value={step.scope||"once"} onChange={e=>setStep({...step,scope:e.target.value})}><option value="once">פעם אחת</option><option value="per_record">לכל רשומה</option></select></Field><Field label="יעד / תווית" wide><Input value={step.target||""} onChange={e=>setStep({...step,target:e.target.value})}/></Field><Field label="ערך / משתנה" wide><Input value={step.value||""} onChange={e=>setStep({...step,value:e.target.value})}/></Field><Field label="זמן המתנה בשניות"><Input type="number" value={step.timeout_seconds||30} onChange={e=>setStep({...step,timeout_seconds:Number(e.target.value)})}/></Field><label className="flex items-end gap-2 pb-2 text-sm"><input type="checkbox" checked={step.enabled!==false} onChange={e=>setStep({...step,enabled:e.target.checked})}/>הפעולה פעילה</label></div><DialogFooter><Button variant="outline" onClick={onClose}>ביטול</Button><Button onClick={save}>שמירת פעולה</Button></DialogFooter></DialogContent></Dialog>;
+function ImportStepsDialog({
+  library,
+  sourceId,
+  setSourceId,
+  selected,
+  setSelected,
+  onClose,
+  onImport,
+}: {
+  library: LibraryData;
+  sourceId: string;
+  setSourceId: (value: string) => void;
+  selected: Set<number>;
+  setSelected: (value: Set<number>) => void;
+  onClose: () => void;
+  onImport: () => void;
+}) {
+  const source = library.automations.find((item) => item.id === sourceId);
+  const toggle = (index: number) => {
+    const next = new Set(selected);
+    if (next.has(index)) next.delete(index);
+    else next.add(index);
+    setSelected(next);
+  };
+  const all = () => setSelected(new Set((source?.steps || []).map((_, index) => index)));
+  return (
+    <Dialog open onOpenChange={(value) => !value && onClose()}>
+      <DialogContent className="max-w-3xl" dir="rtl">
+        <DialogHeader>
+          <DialogTitle className="font-display text-2xl">ייבוא שלבים מאוטומציה קיימת</DialogTitle>
+          <DialogDescription>
+            בחר מקור ושלב אחד או כמה שלבים. הם יתווספו אחרי הבחירה הנוכחית.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <Field label="אוטומציית מקור">
+            <select
+              className="h-10 w-full rounded-md border bg-background px-3"
+              value={sourceId}
+              onChange={(event) => setSourceId(event.target.value)}
+            >
+              {library.automations.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name} · {item.steps.length} שלבים
+                </option>
+              ))}
+            </select>
+          </Field>
+          <div className="flex items-center justify-between">
+            <strong>{selected.size} שלבים נבחרו</strong>
+            <div className="flex gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())}>
+                נקה
+              </Button>
+              <Button variant="outline" size="sm" onClick={all}>
+                בחר הכל
+              </Button>
+            </div>
+          </div>
+          <div className="max-h-96 space-y-2 overflow-auto rounded-md border p-3">
+            {(source?.steps || []).map((step, index) => (
+              <label
+                key={`${index}-${step.name}`}
+                className={`flex cursor-pointer items-center gap-3 rounded-md border p-3 ${selected.has(index) ? "border-primary bg-primary/5" : ""}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={selected.has(index)}
+                  onChange={() => toggle(index)}
+                />
+                <span className="w-7 font-mono text-xs text-muted-foreground">{index + 1}</span>
+                <span className="min-w-0 flex-1">
+                  <strong className="block truncate">{step.name}</strong>
+                  <small className="text-muted-foreground">
+                    {step.type} · {step.target || step.value || "ללא יעד"}
+                  </small>
+                </span>
+              </label>
+            ))}
+            {!source?.steps.length && (
+              <p className="py-12 text-center text-muted-foreground">אין שלבים באוטומציה זו</p>
+            )}
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            ביטול
+          </Button>
+          <Button onClick={onImport} disabled={!selected.size}>
+            <CopyPlus className="size-4" />
+            ייבא {selected.size} שלבים
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
-function Field({label,wide=false,children}:{label:string;wide?:boolean;children:React.ReactNode}){return <div className={`space-y-2 ${wide?"col-span-2":""}`}><Label>{label}</Label>{children}</div>}
 
-function SecretEditor({index,step,profiles,onClose,onSaved}:{index:number;step:WorkflowStep;profiles:WorkflowData["profiles"];onClose:()=>void;onSaved:()=>void}){
-  const [id,setId]=useState(step.credential_profile_id||"");const current=profiles[id];const [name,setName]=useState(current?.name||"");const [username,setUsername]=useState(current?.username||"");const [password,setPassword]=useState("");const [confirmPassword,setConfirmPassword]=useState("");const [show,setShow]=useState(false);
-  const change=(value:string)=>{setId(value);setName(profiles[value]?.name||"");setUsername(profiles[value]?.username||"");setPassword("");setConfirmPassword("")};
-  const save=async()=>{await mavatApi("/api/credentials",{method:"POST",body:JSON.stringify({step_index:index,profile_id:id||null,name,username,password,confirm_password:confirmPassword})});onSaved()};
-  const remove=async()=>{if(!id||!confirm("למחוק את הסיסמה השמורה?"))return;await mavatApi(`/api/credentials/${id}/password`,{method:"DELETE"});onSaved()};
-  return <Dialog open onOpenChange={v=>!v&&onClose()}><DialogContent className="max-w-xl" dir="rtl"><DialogHeader><DialogTitle className="font-display text-2xl">ניהול סיסמה מאובטחת</DialogTitle><DialogDescription>{step.name} · הסיסמה נשמרת ב-Windows Credential Manager בלבד.</DialogDescription></DialogHeader><div className="space-y-4"><Field label="פרופיל כניסה"><select className="h-9 w-full rounded-md border bg-background px-3" value={id} onChange={e=>change(e.target.value)}><option value="">פרופיל חדש</option>{Object.entries(profiles).map(([key,p])=><option key={key} value={key}>{p.name} — {p.username} {p.has_password?"🔒":"🔑"}</option>)}</select></Field><div className="grid grid-cols-2 gap-3"><Field label="שם הפרופיל"><Input value={name} onChange={e=>setName(e.target.value)}/></Field><Field label="שם משתמש / תעודת זהות"><Input value={username} onChange={e=>setUsername(e.target.value)}/></Field><Field label="סיסמה חדשה"><Input type={show?"text":"password"} value={password} onChange={e=>setPassword(e.target.value)} placeholder={current?.has_password?"השאר ריק לשמירת הקיימת":""}/></Field><Field label="אימות סיסמה"><Input type={show?"text":"password"} value={confirmPassword} onChange={e=>setConfirmPassword(e.target.value)}/></Field></div><label className="flex gap-2 text-sm"><input type="checkbox" checked={show} onChange={e=>setShow(e.target.checked)}/>הצג סיסמה בזמן העריכה</label></div><DialogFooter className="gap-2">{id&&<Button variant="destructive" onClick={remove}><Trash2 className="size-4"/>מחיקת סיסמה</Button>}<span className="flex-1"/><Button variant="outline" onClick={onClose}>ביטול</Button><Button onClick={save}>שמירה וקישור לשלב</Button></DialogFooter></DialogContent></Dialog>;
+function StepEditor({
+  model,
+  total,
+  selected,
+  onClose,
+  onSaved,
+}: {
+  model: { index: number | null; step: WorkflowStep };
+  total: number;
+  selected: Set<number>;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [step, setStep] = useState(model.step);
+  const save = async () => {
+    if (!step.name.trim()) {
+      toast.error("יש להזין שם פעולה");
+      return;
+    }
+    if (model.index === null) {
+      await mavatApi("/api/steps", {
+        method: "POST",
+        body: JSON.stringify({ position: selected.size ? Math.max(...selected) + 1 : total, step }),
+      });
+    } else {
+      await mavatApi(`/api/steps/${model.index}`, { method: "PUT", body: JSON.stringify(step) });
+    }
+    onSaved();
+  };
+  return (
+    <Dialog open onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-2xl" dir="rtl">
+        <DialogHeader>
+          <DialogTitle className="font-display text-2xl">
+            {model.index === null ? "פעולה חדשה" : "עריכת פעולה"}
+          </DialogTitle>
+          <DialogDescription>הגדרת סוג הפעולה, היעד והערך שימולא.</DialogDescription>
+        </DialogHeader>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="שם הפעולה" wide>
+            <Input value={step.name} onChange={(e) => setStep({ ...step, name: e.target.value })} />
+          </Field>
+          <Field label="סוג פעולה">
+            <select
+              className="h-9 w-full rounded-md border bg-background px-3"
+              value={step.type}
+              onChange={(e) => setStep({ ...step, type: e.target.value })}
+            >
+              {actions.map((x) => (
+                <option key={x}>{x}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="היקף">
+            <select
+              className="h-9 w-full rounded-md border bg-background px-3"
+              value={step.scope || "once"}
+              onChange={(e) => setStep({ ...step, scope: e.target.value })}
+            >
+              <option value="once">פעם אחת</option>
+              <option value="per_record">לכל רשומה</option>
+            </select>
+          </Field>
+          <Field label="יעד / תווית" wide>
+            <Input
+              value={step.target || ""}
+              onChange={(e) => setStep({ ...step, target: e.target.value })}
+            />
+          </Field>
+          <Field label="ערך / משתנה" wide>
+            <Input
+              value={step.value || ""}
+              onChange={(e) => setStep({ ...step, value: e.target.value })}
+            />
+          </Field>
+          <Field label="זמן המתנה בשניות">
+            <Input
+              type="number"
+              value={step.timeout_seconds || 30}
+              onChange={(e) => setStep({ ...step, timeout_seconds: Number(e.target.value) })}
+            />
+          </Field>
+          <label className="flex items-end gap-2 pb-2 text-sm">
+            <input
+              type="checkbox"
+              checked={step.enabled !== false}
+              onChange={(e) => setStep({ ...step, enabled: e.target.checked })}
+            />
+            הפעולה פעילה
+          </label>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            ביטול
+          </Button>
+          <Button onClick={save}>שמירת פעולה</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+function Field({
+  label,
+  wide = false,
+  children,
+}: {
+  label: string;
+  wide?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={`space-y-2 ${wide ? "col-span-2" : ""}`}>
+      <Label>{label}</Label>
+      {children}
+    </div>
+  );
+}
+
+function SecretEditor({
+  index,
+  step,
+  profiles,
+  onClose,
+  onSaved,
+}: {
+  index: number;
+  step: WorkflowStep;
+  profiles: WorkflowData["profiles"];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [id, setId] = useState(step.credential_profile_id || "");
+  const current = profiles[id];
+  const [name, setName] = useState(current?.name || "");
+  const [username, setUsername] = useState(current?.username || "");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [show, setShow] = useState(false);
+  const change = (value: string) => {
+    setId(value);
+    setName(profiles[value]?.name || "");
+    setUsername(profiles[value]?.username || "");
+    setPassword("");
+    setConfirmPassword("");
+  };
+  const save = async () => {
+    await mavatApi("/api/credentials", {
+      method: "POST",
+      body: JSON.stringify({
+        step_index: index,
+        profile_id: id || null,
+        name,
+        username,
+        password,
+        confirm_password: confirmPassword,
+      }),
+    });
+    onSaved();
+  };
+  const remove = async () => {
+    if (!id || !confirm("למחוק את הסיסמה השמורה?")) return;
+    await mavatApi(`/api/credentials/${id}/password`, { method: "DELETE" });
+    onSaved();
+  };
+  return (
+    <Dialog open onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-xl" dir="rtl">
+        <DialogHeader>
+          <DialogTitle className="font-display text-2xl">ניהול סיסמה מאובטחת</DialogTitle>
+          <DialogDescription>
+            {step.name} · הסיסמה נשמרת ב-Windows Credential Manager בלבד.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <Field label="פרופיל כניסה">
+            <select
+              className="h-9 w-full rounded-md border bg-background px-3"
+              value={id}
+              onChange={(e) => change(e.target.value)}
+            >
+              <option value="">פרופיל חדש</option>
+              {Object.entries(profiles).map(([key, p]) => (
+                <option key={key} value={key}>
+                  {p.name} — {p.username} {p.has_password ? "🔒" : "🔑"}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="שם הפרופיל">
+              <Input value={name} onChange={(e) => setName(e.target.value)} />
+            </Field>
+            <Field label="שם משתמש / תעודת זהות">
+              <Input value={username} onChange={(e) => setUsername(e.target.value)} />
+            </Field>
+            <Field label="סיסמה חדשה">
+              <Input
+                type={show ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder={current?.has_password ? "השאר ריק לשמירת הקיימת" : ""}
+              />
+            </Field>
+            <Field label="אימות סיסמה">
+              <Input
+                type={show ? "text" : "password"}
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+              />
+            </Field>
+          </div>
+          <label className="flex gap-2 text-sm">
+            <input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} />
+            הצג סיסמה בזמן העריכה
+          </label>
+        </div>
+        <DialogFooter className="gap-2">
+          {id && (
+            <Button variant="destructive" onClick={remove}>
+              <Trash2 className="size-4" />
+              מחיקת סיסמה
+            </Button>
+          )}
+          <span className="flex-1" />
+          <Button variant="outline" onClick={onClose}>
+            ביטול
+          </Button>
+          <Button onClick={save}>שמירה וקישור לשלב</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
