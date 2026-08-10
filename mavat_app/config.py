@@ -52,6 +52,7 @@ class ConfigStore:
             "last_data_file_display_name": "",
             "workflow_file": "",
             "browser_profile_dir": str(self.base_dir / "chrome_profile"),
+            "chrome_profile_directory": "Default",
             "chrome_account_email": "",
             "chrome_debug_port": 9222,
         }

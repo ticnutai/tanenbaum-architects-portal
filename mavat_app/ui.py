@@ -695,7 +695,7 @@ class MavatApp(tk.Tk):
                 [
                     chrome,
                     f"--user-data-dir={profile_dir}",
-                    "--profile-directory=Default",
+                    f"--profile-directory={self.store.data.get('chrome_profile_directory', 'Default')}",
                     f"--remote-debugging-port={port}",
                     "--remote-allow-origins=*",
                     "--new-window",

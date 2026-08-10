@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -52,6 +53,12 @@ class Runtime:
         self.current_step = 0
         self.current_step_name = ""
         self.last_error: dict[str, Any] = {}
+        self.chrome_import_thread: threading.Thread | None = None
+        self.chrome_import_state = "idle"
+        self.chrome_import_message = "טרם בוצע ייבוא מ-Chrome"
+        self.chrome_import_current = 0
+        self.chrome_import_total = 0
+        self.chrome_import_warnings: list[str] = []
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         self.automation_dir = self.store.base_dir / "automations"
         self.automation_dir.mkdir(parents=True, exist_ok=True)
@@ -104,6 +111,15 @@ class Runtime:
 
     def log_path(self) -> Path:
         return LOG_PATH.parent / f"{self.active_automation_id()}.log"
+
+    def chrome_import_status(self) -> dict[str, Any]:
+        return {
+            "state": self.chrome_import_state,
+            "message": self.chrome_import_message,
+            "current": self.chrome_import_current,
+            "total": self.chrome_import_total,
+            "warnings": self.chrome_import_warnings[-10:],
+        }
 
     def workflow_path(self, automation_id: str | None = None) -> Path:
         safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", automation_id or self.active_automation_id())
@@ -253,6 +269,7 @@ class Runtime:
             chrome_debug_port=int(self.store.data.get("chrome_debug_port", 9222)),
             callbacks=RunCallbacks(log=self.log, status=status, manual=manual, finished=finished, step=step_status, error=run_error),
             dry_run=dry_run,
+            chrome_profile_directory=str(self.store.data.get("chrome_profile_directory") or "Default"),
         )
         self.log(f"התחלת {'בדיקה' if dry_run else 'הרצה'} עבור {len(records)} רשומות")
         self.runner_thread = threading.Thread(target=self.runner.run, daemon=True)
@@ -274,6 +291,193 @@ def chrome_executable() -> str:
         if candidate and Path(candidate).is_file():
             return candidate
     raise FileNotFoundError("Google Chrome לא נמצא")
+
+
+def chrome_user_data_dir() -> Path:
+    return Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "User Data"
+
+
+def chrome_profile_catalog(root: Path) -> list[dict[str, Any]]:
+    metadata: dict[str, Any] = {}
+    local_state = root / "Local State"
+    if local_state.is_file():
+        try:
+            state = json.loads(local_state.read_text(encoding="utf-8"))
+            metadata = state.get("profile", {}).get("info_cache", {})
+        except (OSError, json.JSONDecodeError, AttributeError):
+            metadata = {}
+    directories = [
+        item for item in root.iterdir()
+        if item.is_dir() and (item.name == "Default" or re.fullmatch(r"Profile \d+", item.name))
+    ] if root.is_dir() else []
+    result: list[dict[str, Any]] = []
+    for directory in sorted(directories, key=lambda item: (item.name != "Default", item.name)):
+        details = metadata.get(directory.name, {}) if isinstance(metadata, dict) else {}
+        result.append({
+            "directory": directory.name,
+            "name": str(details.get("name") or directory.name),
+            "account": str(details.get("user_name") or ""),
+            "avatar": str(details.get("avatar_icon") or ""),
+        })
+    return result
+
+
+def chrome_import_size(root: Path, profile_names: set[str]) -> int:
+    ignored = {"Cache", "Code Cache", "GPUCache", "GrShaderCache", "ShaderCache", "DawnCache", "Media Cache"}
+    total = 0
+    for profile_name in profile_names:
+        profile_path = root / profile_name
+        for current, directories, files in os.walk(profile_path):
+            directories[:] = [name for name in directories if name not in ignored]
+            for filename in files:
+                try:
+                    total += (Path(current) / filename).stat().st_size
+                except OSError:
+                    continue
+    return total
+
+
+def copy_sqlite_snapshot(source: Path, destination: Path) -> None:
+    """Copy a live Chrome SQLite database without reading or exposing its records."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f"{destination.name}.importing")
+    temporary.unlink(missing_ok=True)
+    source_db = sqlite3.connect(f"{source.resolve().as_uri()}?mode=ro", uri=True, timeout=15)
+    target_db = sqlite3.connect(temporary, timeout=15)
+    try:
+        source_db.backup(target_db)
+    finally:
+        target_db.close()
+        source_db.close()
+    temporary.replace(destination)
+
+
+def repair_locked_chrome_databases() -> list[str]:
+    source_root = chrome_user_data_dir()
+    target_root = Path(str(runtime.store.data["browser_profile_dir"]))
+    imported = {item["directory"] for item in chrome_profile_catalog(target_root)}
+    failures: list[str] = []
+    database_paths = ("Network/Cookies", "History", "Login Data", "Web Data", "Favicons", "Top Sites")
+    for profile in chrome_profile_catalog(source_root):
+        directory = str(profile["directory"])
+        if directory not in imported:
+            continue
+        for relative in database_paths:
+            source = source_root / directory / Path(relative)
+            destination = target_root / directory / Path(relative)
+            if not source.is_file() or destination.is_file():
+                continue
+            try:
+                copy_sqlite_snapshot(source, destination)
+            except (OSError, sqlite3.Error) as exc:
+                failures.append(f"{profile['name']} — {relative}: {exc}")
+    return failures
+
+
+def keep_only_chrome_profile(directory: str) -> int:
+    target_root = Path(str(runtime.store.data["browser_profile_dir"])).resolve()
+    available = {item["directory"] for item in chrome_profile_catalog(target_root)}
+    if directory not in available:
+        raise ValueError("פרופיל Chrome שנבחר לא נמצא בעותק המקומי")
+    removed = 0
+    for profile_directory in sorted(available - {directory}):
+        candidate = (target_root / profile_directory).resolve()
+        if candidate.parent != target_root or not (profile_directory == "Default" or re.fullmatch(r"Profile \d+", profile_directory)):
+            raise ValueError("נתיב פרופיל Chrome אינו בטוח למחיקה")
+        shutil.rmtree(candidate)
+        removed += 1
+    local_state = target_root / "Local State"
+    if local_state.is_file():
+        try:
+            state = json.loads(local_state.read_text(encoding="utf-8"))
+            profile_state = state.setdefault("profile", {})
+            info_cache = profile_state.get("info_cache", {})
+            profile_state["info_cache"] = {directory: info_cache[directory]} if directory in info_cache else {}
+            profile_state["last_used"] = directory
+            profile_state["last_active_profiles"] = [directory]
+            profile_state["profiles_order"] = [directory]
+            local_state.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        except (OSError, json.JSONDecodeError, TypeError, KeyError):
+            pass
+    runtime.store.data["chrome_profile_directory"] = directory
+    runtime.store.save()
+    runtime.chrome_import_warnings = []
+    runtime.chrome_import_state = "completed"
+    runtime.chrome_import_message = "פרופיל Chrome יחיד מוכן לאוטומציה"
+    return removed
+
+
+def start_chrome_import(profile_names: list[str]) -> tuple[bool, str]:
+    if runtime.chrome_import_thread and runtime.chrome_import_thread.is_alive():
+        return False, "ייבוא Chrome כבר מתבצע"
+    source = chrome_user_data_dir()
+    target = Path(str(runtime.store.data["browser_profile_dir"]))
+    catalog = chrome_profile_catalog(source)
+    available = {item["directory"] for item in catalog}
+    selected = available if not profile_names or "all" in profile_names else available.intersection(profile_names)
+    if not selected:
+        return False, "לא נמצאו פרופילי Chrome לייבוא"
+    required = chrome_import_size(source, selected)
+    free = shutil.disk_usage(target.parent).free
+    if required + 2_000_000_000 > free:
+        return False, f"אין מספיק מקום פנוי. נדרשים כ-{required / 1_000_000_000:.1f} GB"
+
+    runtime.chrome_import_state = "preparing"
+    runtime.chrome_import_message = "מכין עותק מקומי של פרופילי Chrome"
+    runtime.chrome_import_current = 0
+    runtime.chrome_import_total = len(selected)
+    runtime.chrome_import_warnings = []
+
+    def worker() -> None:
+        backup: Path | None = None
+        try:
+            if target.exists() and any(target.iterdir()):
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                backup = target.with_name(f"{target.name}_backup_{stamp}")
+                target.replace(backup)
+            target.mkdir(parents=True, exist_ok=True)
+            for filename in ("Local State", "First Run"):
+                source_file = source / filename
+                if source_file.is_file():
+                    try:
+                        shutil.copy2(source_file, target / filename)
+                    except OSError as exc:
+                        runtime.chrome_import_warnings.append(f"{filename}: {exc}")
+            ordered = [item for item in catalog if item["directory"] in selected]
+            for index, profile in enumerate(ordered, start=1):
+                name = str(profile["directory"])
+                runtime.chrome_import_state = "copying"
+                runtime.chrome_import_current = index
+                runtime.chrome_import_message = f"מייבא {profile['name']} ({index} מתוך {len(ordered)})"
+                destination = target / name
+                command = [
+                    "robocopy", str(source / name), str(destination), "/E", "/COPY:DAT", "/DCOPY:DAT",
+                    "/R:1", "/W:1", "/XJ", "/NFL", "/NDL", "/NP",
+                    "/XD", "Cache", "Code Cache", "GPUCache", "GrShaderCache", "ShaderCache", "DawnCache", "Media Cache",
+                ]
+                result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+                if result.returncode >= 8:
+                    runtime.chrome_import_warnings.append(f"{profile['name']}: Chrome החזיק מספר קבצים פתוחים; מתבצעת השלמה בטוחה")
+            database_failures = repair_locked_chrome_databases()
+            runtime.chrome_import_warnings = database_failures
+            expected = str(runtime.store.data.get("chrome_account_email") or "").casefold()
+            preferred = next((item["directory"] for item in ordered if str(item.get("account") or "").casefold() == expected), None)
+            runtime.store.data["chrome_profile_directory"] = preferred or ("Default" if "Default" in selected else ordered[0]["directory"])
+            runtime.store.data["chrome_import_backup"] = str(backup or "")
+            runtime.store.data["chrome_imported_at"] = datetime.now().isoformat(timespec="seconds")
+            runtime.store.save()
+            runtime.chrome_import_state = "completed"
+            runtime.chrome_import_message = f"הייבוא הושלם: {len(ordered)} פרופילים זמינים לאוטומציה"
+            runtime.log(runtime.chrome_import_message)
+        except Exception as exc:
+            runtime.chrome_import_state = "error"
+            runtime.chrome_import_message = f"ייבוא Chrome נכשל: {exc}"
+            runtime.chrome_import_warnings.append(str(exc))
+            runtime.log(runtime.chrome_import_message)
+
+    runtime.chrome_import_thread = threading.Thread(target=worker, daemon=True)
+    runtime.chrome_import_thread.start()
+    return True, f"התחיל ייבוא של {len(selected)} פרופילי Chrome"
 
 
 def parse_logs() -> list[dict[str, Any]]:
@@ -608,22 +812,80 @@ def api_recording_status() -> Response:
     return jsonify({"state": runtime.recording_state, "message": runtime.recording_message})
 
 
+@app.get("/api/chrome/profiles")
+def api_chrome_profiles() -> Response:
+    source = chrome_profile_catalog(chrome_user_data_dir())
+    target_root = Path(str(runtime.store.data["browser_profile_dir"]))
+    imported = {item["directory"] for item in chrome_profile_catalog(target_root)}
+    profiles = [{**item, "imported": item["directory"] in imported} for item in source]
+    return jsonify({
+        "profiles": profiles,
+        "selected_directory": str(runtime.store.data.get("chrome_profile_directory") or "Default"),
+        "source_count": len(source),
+        "imported_count": len(imported.intersection({item["directory"] for item in source})),
+        "import": runtime.chrome_import_status(),
+    })
+
+
+@app.post("/api/chrome/import")
+def api_chrome_import() -> Response:
+    payload = request.get_json(force=True) or {}
+    names = [str(value) for value in payload.get("profiles", ["all"])]
+    ok, message = start_chrome_import(names)
+    return jsonify({"ok": ok, "message": message}), (200 if ok else 400)
+
+
+@app.post("/api/chrome/select")
+def api_chrome_select() -> Response:
+    directory = str((request.get_json(force=True) or {}).get("directory") or "")
+    target_root = Path(str(runtime.store.data["browser_profile_dir"]))
+    available = {item["directory"] for item in chrome_profile_catalog(target_root)}
+    if directory not in available:
+        return jsonify({"ok": False, "error": "פרופיל Chrome עדיין לא יובא"}), 400
+    runtime.store.data["chrome_profile_directory"] = directory
+    runtime.store.save()
+    return jsonify({"ok": True, "directory": directory})
+
+
+@app.post("/api/chrome/keep-only")
+def api_chrome_keep_only() -> Response:
+    directory = str((request.get_json(force=True) or {}).get("directory") or "")
+    try:
+        removed = keep_only_chrome_profile(directory)
+    except (OSError, ValueError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    runtime.log(f"נשמר רק פרופיל Chrome {directory}; הוסרו {removed} עותקי פרופילים אחרים")
+    return jsonify({"ok": True, "removed": removed})
+
+
+@app.post("/api/chrome/repair")
+def api_chrome_repair() -> Response:
+    failures = repair_locked_chrome_databases()
+    runtime.chrome_import_warnings = failures
+    if failures:
+        return jsonify({"ok": False, "error": "חלק מקבצי Chrome עדיין נעולים", "warnings": failures}), 400
+    runtime.chrome_import_state = "completed"
+    runtime.chrome_import_message = "כל קובצי הליבה של פרופיל Chrome הושלמו"
+    return jsonify({"ok": True, "message": runtime.chrome_import_message})
+
+
 @app.post("/api/chrome/open")
 def api_open_chrome() -> Response:
     try:
         profile_dir = Path(runtime.store.data["browser_profile_dir"])
         profile_dir.mkdir(parents=True, exist_ok=True)
         port = int(runtime.store.data.get("chrome_debug_port", 9222))
+        profile_directory = str(runtime.store.data.get("chrome_profile_directory") or "Default")
         subprocess.Popen([
             chrome_executable(),
             f"--user-data-dir={profile_dir}",
-            "--profile-directory=Default",
+            f"--profile-directory={profile_directory}",
             f"--remote-debugging-port={port}",
             "--remote-allow-origins=*",
             "--new-window",
             MAVAT_URL,
         ], cwd=str(ROOT_DIR))
-        runtime.log("Chrome נפתח בדף השירות של מבא״ת")
+        runtime.log(f"Chrome נפתח בדף השירות של מבא״ת עם הפרופיל {profile_directory}")
         return jsonify({"ok": True})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500

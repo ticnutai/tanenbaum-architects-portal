@@ -51,6 +51,7 @@ class WorkflowRunner:
         chrome_debug_port: int,
         callbacks: RunCallbacks,
         dry_run: bool = True,
+        chrome_profile_directory: str = "Default",
     ) -> None:
         self.workflow = workflow
         self.records = records or [{}]
@@ -60,6 +61,7 @@ class WorkflowRunner:
         self.secrets_by_profile = secrets_by_profile
         self.browser_profile_dir = browser_profile_dir
         self.chrome_debug_port = chrome_debug_port
+        self.chrome_profile_directory = chrome_profile_directory
         self.callbacks = callbacks
         self.dry_run = dry_run
         self.stop_event = threading.Event()
@@ -134,7 +136,10 @@ class WorkflowRunner:
                         headless=False,
                         locale="he-IL",
                         viewport={"width": 1440, "height": 900},
-                        args=[f"--remote-debugging-port={self.chrome_debug_port}"],
+                        args=[
+                            f"--remote-debugging-port={self.chrome_debug_port}",
+                            f"--profile-directory={self.chrome_profile_directory}",
+                        ],
                     )
                     owns_context = True
                     self.callbacks.log("נפתח Chrome עם הפרופיל הקבוע של המערכת")
