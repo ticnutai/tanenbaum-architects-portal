@@ -1,5 +1,4 @@
-import { Link } from "@tanstack/react-router";
-import { Bot, ChevronLeft } from "lucide-react";
+import { Bot } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -9,7 +8,9 @@ export function AutomationContext() {
   const [data, setData] = useState<AutomationsData | null>(null);
 
   useEffect(() => {
-    mavatApi<AutomationsData>("/api/automations").then(setData).catch(() => undefined);
+    mavatApi<AutomationsData>("/api/automations")
+      .then(setData)
+      .catch(() => undefined);
   }, []);
 
   const active = data?.automations.find((item) => item.id === data.active_id);
@@ -27,16 +28,6 @@ export function AutomationContext() {
       <Badge variant={active.status === "active" ? "secondary" : "outline"}>
         {active.status === "active" ? "פעילה" : "טיוטה"}
       </Badge>
-      <ButtonLink />
     </div>
-  );
-}
-
-function ButtonLink() {
-  return (
-    <Link to="/automations" className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline">
-      לכל האוטומציות
-      <ChevronLeft className="size-4" />
-    </Link>
   );
 }

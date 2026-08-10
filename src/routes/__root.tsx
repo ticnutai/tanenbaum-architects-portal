@@ -4,9 +4,11 @@ import {
   Link,
   createRootRouteWithContext,
   useRouter,
+  useRouterState,
   HeadContent,
   Scripts,
 } from "@tanstack/react-router";
+import { ArrowRight } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
@@ -15,6 +17,7 @@ import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { ThemeSwitcher } from "@/components/theme-switcher";
 import { Toaster } from "@/components/ui/sonner";
+import { Button } from "@/components/ui/button";
 
 function NotFoundComponent() {
   return (
@@ -136,6 +139,15 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+  const router = useRouter();
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const goBack = () => {
+    if (router.history.canGoBack()) {
+      router.history.back();
+      return;
+    }
+    void router.navigate({ to: "/" });
+  };
 
   return (
     <QueryClientProvider client={queryClient}>
@@ -145,6 +157,18 @@ function RootComponent() {
           <div className="flex min-w-0 flex-1 flex-col">
             <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-border bg-card/80 px-4 backdrop-blur">
               <SidebarTrigger />
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={goBack}
+                disabled={pathname === "/" && !router.history.canGoBack()}
+                aria-label="חזרה למסך הקודם"
+                title="חזרה למסך הקודם"
+              >
+                <ArrowRight className="size-4" />
+                <span className="hidden sm:inline">חזרה</span>
+              </Button>
               <span className="font-display text-sm font-medium text-muted-foreground">
                 משרד טננבאום אדריכלות
               </span>
@@ -171,9 +195,12 @@ function SystemStatus() {
   useEffect(() => {
     const check = async () => {
       try {
-        const [python, chrome] = await Promise.all([fetch("/api/run/status"), fetch("/api/chrome/status")]);
+        const [python, chrome] = await Promise.all([
+          fetch("/api/run/status"),
+          fetch("/api/chrome/status"),
+        ]);
         setPythonConnected(python.ok);
-        const chromeStatus = chrome.ok ? await chrome.json() as { connected?: boolean } : {};
+        const chromeStatus = chrome.ok ? ((await chrome.json()) as { connected?: boolean }) : {};
         setCdpConnected(Boolean(chromeStatus.connected));
       } catch {
         setPythonConnected(false);
@@ -184,8 +211,20 @@ function SystemStatus() {
     const timer = window.setInterval(check, 5000);
     return () => window.clearInterval(timer);
   }, []);
-  return <span className="hidden items-center gap-4 text-xs text-muted-foreground sm:flex">
-    <span className="flex items-center gap-2"><i className={`size-2 rounded-full ${pythonConnected ? "bg-emerald-500" : "bg-destructive"}`} />{pythonConnected ? "Python מחובר" : "Python מנותק"}</span>
-    <span className="flex items-center gap-2"><i className={`size-2 rounded-full ${cdpConnected ? "bg-emerald-500" : "bg-destructive"}`} />{cdpConnected ? "Chrome CDP מחובר" : "Chrome CDP מנותק"}</span>
-  </span>;
+  return (
+    <span className="hidden items-center gap-4 text-xs text-muted-foreground sm:flex">
+      <span className="flex items-center gap-2">
+        <i
+          className={`size-2 rounded-full ${pythonConnected ? "bg-emerald-500" : "bg-destructive"}`}
+        />
+        {pythonConnected ? "Python מחובר" : "Python מנותק"}
+      </span>
+      <span className="flex items-center gap-2">
+        <i
+          className={`size-2 rounded-full ${cdpConnected ? "bg-emerald-500" : "bg-destructive"}`}
+        />
+        {cdpConnected ? "Chrome CDP מחובר" : "Chrome CDP מנותק"}
+      </span>
+    </span>
+  );
 }
