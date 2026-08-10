@@ -49,19 +49,92 @@ class Runtime:
         self.run_current_row = 0
         self.run_total_rows = 0
         self.manual_message = ""
+        self.current_step = 0
+        self.current_step_name = ""
+        self.last_error: dict[str, Any] = {}
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        self.automation_dir = self.store.base_dir / "automations"
+        self.automation_dir.mkdir(parents=True, exist_ok=True)
+        self.ensure_default_automation()
+
+    def ensure_default_automation(self) -> None:
+        automations = self.store.data.get("automations")
+        if not isinstance(automations, list) or not automations:
+            automations = [{
+                "id": "mavat",
+                "name": "אוטומציית מבא״ת",
+                "description": "כניסה למבא״ת, מילוי נתונים וביצוע שלבי העבודה באתר",
+                "status": "active",
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+            }]
+            self.store.data["automations"] = automations
+            self.store.data["active_automation_id"] = "mavat"
+            self.store.save()
+        active_id = str(self.store.data.get("active_automation_id") or "")
+        if not any(str(item.get("id")) == active_id for item in automations):
+            self.store.data["active_automation_id"] = str(automations[0]["id"])
+            self.store.save()
+        target = self.automation_dir / "mavat.json"
+        if not target.exists():
+            source = load_workflow(WORKFLOW_PATH)
+            save_workflow(target, source)
+
+    def automations(self) -> list[dict[str, Any]]:
+        return list(self.store.data.get("automations") or [])
+
+    def active_automation_id(self) -> str:
+        return str(self.store.data.get("active_automation_id") or "mavat")
+
+    def active_automation(self) -> dict[str, Any]:
+        active_id = self.active_automation_id()
+        return next((item for item in self.automations() if str(item.get("id")) == active_id), self.automations()[0])
+
+    def active_data_file(self) -> tuple[str, str]:
+        automation = self.active_automation()
+        is_migrated_default = str(automation.get("id")) == "mavat"
+        path = str(automation.get("data_file") or (self.store.data.get("last_data_file") if is_migrated_default else "") or "")
+        name = str(automation.get("data_file_name") or (self.store.data.get("last_data_file_display_name") if is_migrated_default else "") or "")
+        return path, name
+
+    def set_active_data_file(self, path: str, display_name: str) -> None:
+        automation = self.active_automation()
+        automation["data_file"] = path
+        automation["data_file_name"] = display_name
+        self.store.save()
+
+    def log_path(self) -> Path:
+        return LOG_PATH.parent / f"{self.active_automation_id()}.log"
+
+    def workflow_path(self, automation_id: str | None = None) -> Path:
+        safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", automation_id or self.active_automation_id())
+        return self.automation_dir / f"{safe_id or 'mavat'}.json"
+
+    def activate_automation(self, automation_id: str) -> dict[str, Any]:
+        automation = next((item for item in self.automations() if str(item.get("id")) == automation_id), None)
+        if not automation:
+            raise ValueError("האוטומציה לא נמצאה")
+        if self.runner_thread and self.runner_thread.is_alive():
+            raise RuntimeError("לא ניתן להחליף אוטומציה בזמן הרצה")
+        if self.recorder_thread and self.recorder_thread.is_alive():
+            raise RuntimeError("יש לעצור את ההקלטה לפני החלפת אוטומציה")
+        self.store.data["active_automation_id"] = automation_id
+        self.store.save()
+        self.log(f"נבחרה אוטומציה: {automation.get('name', automation_id)}")
+        return automation
 
     def read_workflow(self) -> dict[str, Any]:
         with self.lock:
-            return load_workflow(WORKFLOW_PATH)
+            return load_workflow(self.workflow_path())
 
     def write_workflow(self, workflow: dict[str, Any]) -> None:
         with self.lock:
-            save_workflow(WORKFLOW_PATH, workflow)
+            save_workflow(self.workflow_path(), workflow)
 
     def log(self, message: str) -> None:
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with self.lock, LOG_PATH.open("a", encoding="utf-8") as handle:
+        path = self.log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with self.lock, path.open("a", encoding="utf-8") as handle:
             handle.write(f"[{stamp}] {message}\n")
 
     def recorded_step(self, step: dict[str, Any]) -> None:
@@ -113,6 +186,9 @@ class Runtime:
             "current_row": self.run_current_row,
             "total_rows": self.run_total_rows,
             "manual_message": self.manual_message,
+            "current_step": self.current_step,
+            "current_step_name": self.current_step_name,
+            "last_error": self.last_error,
         }
 
     def start_run(self, profile_id: str, dry_run: bool) -> tuple[bool, str]:
@@ -122,7 +198,7 @@ class Runtime:
         profile = profiles.get(profile_id)
         if not profile:
             return False, "יש לבחור פרופיל כניסה"
-        data_file = str(self.store.data.get("last_data_file") or "")
+        data_file, _ = self.active_data_file()
         if not data_file:
             return False, "יש לבחור קובץ Excel, CSV או Word"
         try:
@@ -137,6 +213,9 @@ class Runtime:
         self.run_current_row = 0
         self.run_total_rows = len(records)
         self.manual_message = ""
+        self.current_step = 0
+        self.current_step_name = ""
+        self.last_error = {}
 
         def status(row: int, state: str, detail: str) -> None:
             self.run_current_row = row
@@ -147,6 +226,18 @@ class Runtime:
             self.manual_message = message
             self.run_message = "ממתין לפעולה ידנית"
             self.log(f"נעצר ידנית: {message}")
+
+        def step_status(row: int, step_number: int, name: str, state: str) -> None:
+            self.run_current_row = row
+            self.current_step = step_number
+            self.current_step_name = name
+            if state == "running":
+                self.run_message = f"מבצע שלב {step_number}: {name}"
+
+        def run_error(details: dict[str, Any]) -> None:
+            self.last_error = details
+            self.run_state = "error"
+            self.run_message = f"שלב {details.get('step')} נכשל: {details.get('step_name')}"
 
         def finished(message: str) -> None:
             self.run_state = "error" if "נכשלה" in message or "שגיאה" in message else "idle"
@@ -160,7 +251,7 @@ class Runtime:
             default_profile_id=profile.id, secrets_by_profile=secrets,
             browser_profile_dir=str(self.store.data["browser_profile_dir"]),
             chrome_debug_port=int(self.store.data.get("chrome_debug_port", 9222)),
-            callbacks=RunCallbacks(log=self.log, status=status, manual=manual, finished=finished),
+            callbacks=RunCallbacks(log=self.log, status=status, manual=manual, finished=finished, step=step_status, error=run_error),
             dry_run=dry_run,
         )
         self.log(f"התחלת {'בדיקה' if dry_run else 'הרצה'} עבור {len(records)} רשומות")
@@ -186,16 +277,17 @@ def chrome_executable() -> str:
 
 
 def parse_logs() -> list[dict[str, Any]]:
-    if not LOG_PATH.exists():
+    log_path = runtime.log_path()
+    if not log_path.exists():
         return []
     events: list[dict[str, Any]] = []
     pattern = re.compile(r"^\[(?P<timestamp>[^]]+)]\s*(?P<message>.*)$")
-    for line_number, raw in enumerate(LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
+    for line_number, raw in enumerate(log_path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
         match = pattern.match(raw)
         timestamp = match.group("timestamp") if match else ""
         message = match.group("message") if match else raw
         lower = message.lower()
-        if any(word in message for word in ("שגיאה", "נכשלה", "חריגה")) or "error" in lower:
+        if any(word in message for word in ("שגיאה", "נכשלה", "חריגה", "כשל")) or "error" in lower:
             status = "error"
         elif any(word in message for word in ("הצלחה", "הסתיימה", "הושלם")):
             status = "success"
@@ -224,6 +316,74 @@ def runs_page() -> str:
     return render_template("runs.html", active="runs")
 
 
+@app.get("/api/automations")
+def api_automations() -> Response:
+    items: list[dict[str, Any]] = []
+    for automation in runtime.automations():
+        item = dict(automation)
+        workflow = load_workflow(runtime.workflow_path(str(item.get("id"))))
+        item["steps_count"] = len(workflow.get("steps", []))
+        item["active"] = str(item.get("id")) == runtime.active_automation_id()
+        items.append(item)
+    return jsonify({"automations": items, "active_id": runtime.active_automation_id()})
+
+
+@app.post("/api/automations")
+def api_create_automation() -> Response:
+    payload = request.get_json(force=True) or {}
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        return jsonify({"ok": False, "error": "יש להזין שם לאוטומציה"}), 400
+    automation_id = uuid.uuid4().hex
+    source_id = str(payload.get("source_id") or "").strip()
+    description = str(payload.get("description") or "").strip() or "תהליך אוטומציה חדש"
+    source = next((item for item in runtime.automations() if str(item.get("id")) == source_id), None)
+    automation = {
+        "id": automation_id,
+        "name": name,
+        "description": description,
+        "status": "draft",
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    if source:
+        automation["data_file"] = str(source.get("data_file") or "")
+        automation["data_file_name"] = str(source.get("data_file_name") or "")
+        source_workflow = load_workflow(runtime.workflow_path(source_id))
+        source_workflow["name"] = name
+        save_workflow(runtime.workflow_path(automation_id), source_workflow)
+    else:
+        save_workflow(runtime.workflow_path(automation_id), {"name": name, "steps": []})
+    runtime.store.data.setdefault("automations", []).append(automation)
+    runtime.store.save()
+    runtime.log(f"נוצרה אוטומציה חדשה: {name}")
+    return jsonify({"ok": True, "automation": automation})
+
+
+@app.post("/api/automations/<automation_id>/activate")
+def api_activate_automation(automation_id: str) -> Response:
+    try:
+        automation = runtime.activate_automation(automation_id)
+    except (ValueError, RuntimeError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "automation": automation})
+
+
+@app.delete("/api/automations/<automation_id>")
+def api_delete_automation(automation_id: str) -> Response:
+    automations = runtime.automations()
+    if len(automations) <= 1:
+        return jsonify({"ok": False, "error": "חייבת להישאר לפחות אוטומציה אחת"}), 400
+    if automation_id == runtime.active_automation_id():
+        return jsonify({"ok": False, "error": "בחר אוטומציה אחרת לפני המחיקה"}), 400
+    remaining = [item for item in automations if str(item.get("id")) != automation_id]
+    if len(remaining) == len(automations):
+        return jsonify({"ok": False, "error": "האוטומציה לא נמצאה"}), 404
+    runtime.store.data["automations"] = remaining
+    runtime.store.save()
+    runtime.workflow_path(automation_id).unlink(missing_ok=True)
+    return jsonify({"ok": True})
+
+
 @app.get("/api/workflow")
 def api_workflow() -> Response:
     workflow = runtime.read_workflow()
@@ -241,12 +401,16 @@ def api_workflow() -> Response:
         profile_id = str(step.get("credential_profile_id") or "")
         if step.get("type") == "fill_secret":
             step["_secret_status"] = "saved" if profile_id and profile_status.get(profile_id, {}).get("has_password") else "missing"
-    return jsonify({"workflow": workflow, "profiles": profile_status})
+    return jsonify({
+        "workflow": workflow,
+        "profiles": profile_status,
+        "automation": runtime.active_automation(),
+    })
 
 
 @app.get("/api/settings")
 def api_settings() -> Response:
-    data_path = str(runtime.store.data.get("last_data_file") or "")
+    data_path, data_name = runtime.active_data_file()
     preview: list[dict[str, Any]] = []
     error = ""
     if data_path:
@@ -256,7 +420,7 @@ def api_settings() -> Response:
             error = str(exc)
     return jsonify({
         "data_file": data_path,
-        "data_file_name": str(runtime.store.data.get("last_data_file_display_name") or (Path(data_path).name if data_path else "")),
+        "data_file_name": data_name or (Path(data_path).name if data_path else ""),
         "preview": preview,
         "preview_count": len(preview),
         "error": error,
@@ -271,9 +435,7 @@ def api_set_data_file() -> Response:
         records = load_records(path)
     except Exception as exc:
         return jsonify({"ok": False, "error": f"לא ניתן לקרוא את הקובץ: {exc}"}), 400
-    runtime.store.data["last_data_file"] = str(path.resolve())
-    runtime.store.data["last_data_file_display_name"] = path.name
-    runtime.store.save()
+    runtime.set_active_data_file(str(path.resolve()), path.name)
     return jsonify({"ok": True, "name": path.name, "count": len(records), "preview": records[:5]})
 
 
@@ -295,9 +457,7 @@ def api_upload_data_file() -> Response:
     except Exception as exc:
         target.unlink(missing_ok=True)
         return jsonify({"ok": False, "error": f"לא ניתן לקרוא את הקובץ: {exc}"}), 400
-    runtime.store.data["last_data_file"] = str(target)
-    runtime.store.data["last_data_file_display_name"] = uploaded.filename
-    runtime.store.save()
+    runtime.set_active_data_file(str(target), uploaded.filename)
     return jsonify({"ok": True, "name": uploaded.filename, "count": len(records), "preview": records[:5]})
 
 
@@ -332,6 +492,14 @@ def api_run_continue() -> Response:
 @app.get("/api/run/status")
 def api_run_status() -> Response:
     return jsonify(runtime.run_status())
+
+
+@app.get("/api/run/error-screenshot")
+def api_run_error_screenshot() -> Response:
+    path = Path(str(runtime.last_error.get("screenshot") or ""))
+    if not path.is_file():
+        return jsonify({"ok": False, "error": "לא נמצא צילום כשל"}), 404
+    return send_file(path, mimetype="image/png")
 
 
 @app.post("/api/steps")
@@ -483,7 +651,8 @@ def api_logs() -> Response:
 
 @app.get("/api/console")
 def api_console() -> Response:
-    content = LOG_PATH.read_text(encoding="utf-8", errors="replace") if LOG_PATH.exists() else ""
+    log_path = runtime.log_path()
+    content = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
     return jsonify({"content": content})
 
 

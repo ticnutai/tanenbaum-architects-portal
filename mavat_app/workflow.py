@@ -4,6 +4,7 @@ import json
 import re
 import threading
 import time
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -15,6 +16,8 @@ class RunCallbacks:
     status: Callable[[int, str, str], None]
     manual: Callable[[str], None]
     finished: Callable[[str], None]
+    step: Callable[[int, int, str, str], None] | None = None
+    error: Callable[[dict[str, Any]], None] | None = None
 
 
 class SafeFormat(dict):
@@ -135,21 +138,70 @@ class WorkflowRunner:
                     )
                     owns_context = True
                     self.callbacks.log("נפתח Chrome עם הפרופיל הקבוע של המערכת")
-                page = context.pages[0] if context.pages else context.new_page()
+                first_goto = next(
+                    (
+                        str(step.get("value") or step.get("target") or "")
+                        for step in self.workflow["steps"]
+                        if step.get("enabled", True) and step.get("type") == "goto"
+                    ),
+                    "",
+                )
+                matching_pages = [
+                    candidate for candidate in context.pages
+                    if first_goto and candidate.url.rstrip("/") == first_goto.rstrip("/")
+                ]
+                http_pages = [candidate for candidate in context.pages if candidate.url.startswith("http")]
+                page = matching_pages[-1] if matching_pages else (http_pages[-1] if http_pages else context.new_page())
+                self.callbacks.log(f"לשונית נבחרה להרצה: {page.url or 'לשונית חדשה'}")
                 try:
                     for index, row in enumerate(self.records, start=1):
                         if self.stop_event.is_set():
                             break
                         self.callbacks.status(index, "בביצוע", "")
-                        for step in self.workflow["steps"]:
+                        for step_number, step in enumerate(self.workflow["steps"], start=1):
                             if self.stop_event.is_set():
                                 break
                             if not step.get("enabled", True):
                                 continue
                             if step.get("scope", "per_record") == "once" and index > 1:
                                 continue
-                            self.callbacks.log(f"שורה {index}: {self._describe(step, row)}")
-                            self._execute_step(page, step, row)
+                            description = self._describe(step, row)
+                            self.callbacks.log(f"▶ שורה {index}, שלב {step_number}: {description}")
+                            if self.callbacks.step:
+                                self.callbacks.step(index, step_number, str(step.get("name") or step.get("type")), "running")
+                            try:
+                                page = self._execute_step(page, step, row)
+                            except Exception as exc:
+                                folder = Path("screenshots") / "errors"
+                                folder.mkdir(parents=True, exist_ok=True)
+                                screenshot: Path | None = folder / f"error_{datetime.now().strftime('%Y%m%d_%H%M%S')}_step_{step_number}.png"
+                                try:
+                                    page.screenshot(path=str(screenshot), full_page=True)
+                                except Exception:
+                                    screenshot = None
+                                details = {
+                                    "row": index,
+                                    "step": step_number,
+                                    "step_name": str(step.get("name") or step.get("type")),
+                                    "action": str(step.get("type") or ""),
+                                    "target": str(step.get("target") or ""),
+                                    "url": str(page.url or ""),
+                                    "error": str(exc),
+                                    "screenshot": str(screenshot.resolve()) if screenshot else "",
+                                }
+                                self.callbacks.log(
+                                    f"❌ כשל בשורה {index}, שלב {step_number} ({details['step_name']}): {exc} | URL: {details['url']}"
+                                )
+                                if details["screenshot"]:
+                                    self.callbacks.log(f"צילום הכשל נשמר: {details['screenshot']}")
+                                if self.callbacks.step:
+                                    self.callbacks.step(index, step_number, details["step_name"], "error")
+                                if self.callbacks.error:
+                                    self.callbacks.error(details)
+                                raise RuntimeError(f"שלב {step_number} נכשל: {details['step_name']} — {exc}") from exc
+                            self.callbacks.log(f"✓ שלב {step_number} הושלם: {step.get('name', step.get('type', ''))}")
+                            if self.callbacks.step:
+                                self.callbacks.step(index, step_number, str(step.get("name") or step.get("type")), "success")
                         if not self.stop_event.is_set():
                             self.callbacks.status(index, "הצלחה", "")
                 finally:
@@ -160,21 +212,40 @@ class WorkflowRunner:
             self.callbacks.log(f"שגיאה: {exc}")
             self.callbacks.finished("ההרצה נכשלה")
 
-    def _execute_step(self, page: Any, step: dict[str, Any], row: dict[str, Any]) -> None:
+    def _execute_step(self, page: Any, step: dict[str, Any], row: dict[str, Any]) -> Any:
         action = step.get("type", "noop")
         target = self._resolved(step.get("target", ""), row)
         value = self._resolved(step.get("value", ""), row)
         timeout = int(step.get("timeout_seconds", 30)) * 1000
 
+        if action in {"fill_label", "fill_placeholder"} and re.search(r"\{(?:TODO|[^{}]+)\}", value):
+            raise RuntimeError(f"הערך '{value}' לא מופה לנתון אמיתי")
+
         if action == "noop":
-            return
+            return page
         if action == "goto":
-            page.goto(value or target, wait_until="domcontentloaded", timeout=timeout)
+            destination = value or target
+            if page.url.rstrip("/") != destination.rstrip("/"):
+                page.goto(destination, wait_until="domcontentloaded", timeout=timeout)
+            else:
+                self.callbacks.log("הדף כבר פתוח בכתובת המבוקשת; הניווט דולג")
         elif action == "click_text":
+            pages_before = set(page.context.pages)
             page.get_by_text(target, exact=False).first.click(timeout=timeout)
+            page.wait_for_timeout(600)
+            new_pages = [candidate for candidate in page.context.pages if candidate not in pages_before and candidate.url.startswith("http")]
+            if new_pages:
+                page = new_pages[-1]
+                page.wait_for_load_state("domcontentloaded", timeout=timeout)
         elif action == "click_role":
+            pages_before = set(page.context.pages)
             role = value or "button"
             page.get_by_role(role, name=target, exact=False).first.click(timeout=timeout)
+            page.wait_for_timeout(600)
+            new_pages = [candidate for candidate in page.context.pages if candidate not in pages_before and candidate.url.startswith("http")]
+            if new_pages:
+                page = new_pages[-1]
+                page.wait_for_load_state("domcontentloaded", timeout=timeout)
         elif action == "fill_label":
             page.get_by_label(target, exact=False).first.fill(value, timeout=timeout)
         elif action == "fill_placeholder":
@@ -200,3 +271,4 @@ class WorkflowRunner:
             time.sleep(max(0.0, float(value or target or 1)))
         else:
             raise ValueError(f"סוג שלב לא נתמך: {action}")
+        return page

@@ -3,9 +3,6 @@ import {
   LayoutDashboard,
   Building2,
   Users,
-  KeyRound,
-  ListOrdered,
-  PlayCircle,
   ScrollText,
   Settings,
   Compass,
@@ -35,12 +32,9 @@ const groups = [
     ],
   },
   {
-    label: "אוטומציית מבא״ת",
+    label: "אוטומציה",
     items: [
-      { title: "פרופילי כניסה", url: "/profiles", icon: KeyRound },
-      { title: "פרופילי אוטומציה", url: "/automations", icon: Bot },
-      { title: "שלבי עבודה", url: "/workflow", icon: ListOrdered },
-      { title: "הפעלה", url: "/run", icon: PlayCircle },
+      { title: "אוטומציות", url: "/automations", icon: Bot },
       { title: "יומן ריצה", url: "/logs", icon: ScrollText },
     ],
   },
@@ -75,7 +69,7 @@ export function AppSidebar() {
               <SidebarMenu>
                 {group.items.map((item) => (
                   <SidebarMenuItem key={item.url}>
-                    <SidebarMenuButton asChild isActive={pathname === item.url} tooltip={item.title}>
+                    <SidebarMenuButton asChild isActive={pathname === item.url || (item.url === "/automations" && pathname.startsWith("/automations/"))} tooltip={item.title}>
                       <Link to={item.url} className="flex items-center gap-2">
                         <item.icon className="size-4" />
                         <span>{item.title}</span>

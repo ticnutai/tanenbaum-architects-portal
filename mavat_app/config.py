@@ -45,6 +45,8 @@ class ConfigStore:
 
     def _load(self) -> dict[str, Any]:
         defaults: dict[str, Any] = {
+            "automations": [],
+            "active_automation_id": "",
             "profiles": [],
             "last_data_file": "",
             "last_data_file_display_name": "",

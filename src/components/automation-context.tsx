@@ -1,0 +1,42 @@
+import { Link } from "@tanstack/react-router";
+import { Bot, ChevronLeft } from "lucide-react";
+import { useEffect, useState } from "react";
+
+import { Badge } from "@/components/ui/badge";
+import { mavatApi, type AutomationsData } from "@/lib/mavat-api";
+
+export function AutomationContext() {
+  const [data, setData] = useState<AutomationsData | null>(null);
+
+  useEffect(() => {
+    mavatApi<AutomationsData>("/api/automations").then(setData).catch(() => undefined);
+  }, []);
+
+  const active = data?.automations.find((item) => item.id === data.active_id);
+  if (!active) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-md border border-primary/15 bg-primary/5 px-4 py-3">
+      <span className="flex size-9 items-center justify-center rounded-md bg-primary text-primary-foreground">
+        <Bot className="size-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-xs text-muted-foreground">האוטומציה הפעילה</p>
+        <p className="truncate font-semibold">{active.name}</p>
+      </div>
+      <Badge variant={active.status === "active" ? "secondary" : "outline"}>
+        {active.status === "active" ? "פעילה" : "טיוטה"}
+      </Badge>
+      <ButtonLink />
+    </div>
+  );
+}
+
+function ButtonLink() {
+  return (
+    <Link to="/automations" className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline">
+      לכל האוטומציות
+      <ChevronLeft className="size-4" />
+    </Link>
+  );
+}

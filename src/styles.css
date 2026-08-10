@@ -257,6 +257,13 @@
     border-color: var(--color-border);
   }
 
+  html,
+  body,
+  #root {
+    direction: rtl;
+    text-align: right;
+  }
+
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
@@ -269,6 +276,30 @@
     font-family: var(--font-display);
     letter-spacing: -0.01em;
   }
+
+  input,
+  textarea,
+  select,
+  table,
+  th,
+  td,
+  [role="dialog"],
+  [data-sidebar] {
+    direction: rtl;
+    text-align: right;
+  }
+
+  [dir="ltr"],
+  input[dir="ltr"],
+  textarea[dir="ltr"] {
+    direction: ltr;
+    text-align: left;
+  }
+}
+
+.direction-ltr {
+  direction: ltr;
+  unicode-bidi: isolate;
 }
 
 @theme inline {

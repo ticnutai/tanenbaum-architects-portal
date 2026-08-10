@@ -4,6 +4,7 @@ import { Circle, GripVertical, KeyRound, Pause, Play, Plus, Radio, Search, Squar
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/page-header";
+import { AutomationContext } from "@/components/automation-context";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -38,6 +39,7 @@ function WorkflowPage() {
   const record=async(action:"start"|"stop")=>{const result=await mavatApi<{message:string}>(`/api/recording/${action}`,{method:"POST"});toast(result.message);await poll()};
 
   return <div className="mx-auto max-w-6xl space-y-8">
+    <AutomationContext/>
     <PageHeader eyebrow="תהליך" title="שלבי עבודה" description="ערוך, הוסף וסדר את פעולות האתר. ההקלטה קולטת לחיצות ושדות מ-Chrome אך אינה שומרת ערכי סיסמה."
       actions={<><Button variant="outline" onClick={()=>record("start")} disabled={["recording","connecting"].includes(recording.state)}><Radio className="size-4"/>התחל הקלטה</Button><Button variant="outline" onClick={()=>record("stop")} disabled={!["recording","connecting"].includes(recording.state)}><Square className="size-4"/>עצור</Button><Button onClick={()=>setEditor({index:null,step:{...emptyStep}})}><Plus className="size-4"/>שלב חדש</Button></>}/>
 

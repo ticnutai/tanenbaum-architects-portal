@@ -60,7 +60,7 @@ function Index() {
         {stats.map((s) => (
           <Card key={s.label} className="surface-grain">
             <CardContent className="pt-6">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-start gap-3">
                 <s.icon className="size-5 text-accent" />
                 <span className="font-display text-3xl font-bold">{s.value}</span>
               </div>

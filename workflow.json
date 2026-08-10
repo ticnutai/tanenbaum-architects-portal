@@ -12,40 +12,22 @@
       "enabled": true
     },
     {
-      "name": "מעבר להזדהות",
-      "type": "manual",
+      "name": "לחיצה: לכניסה למערכת - הגשת תכניות מקוונות במערכת מבא\"ת (מבנה אחיד)",
+      "type": "click_role",
       "scope": "once",
-      "target": "",
-      "value": "לחץ באתר על הקישור להגשת בקשה והגע למסך ההזדהות. לאחר מכן לחץ במערכת על 'המשך אחרי פעולה ידנית'.",
+      "target": "לכניסה למערכת - הגשת תכניות מקוונות במערכת מבא\"ת (מבנה אחיד)",
+      "value": "link",
       "timeout_seconds": 30,
       "enabled": true
     },
     {
-      "name": "בחירת כניסה בדרך אחרת",
-      "type": "click_text",
+      "name": "לחיצה: כניסה",
+      "type": "click_role",
       "scope": "once",
-      "target": "לכניסה בדרך אחרת",
-      "value": "",
+      "target": "כניסה",
+      "value": "button",
       "timeout_seconds": 30,
-      "enabled": false
-    },
-    {
-      "name": "הזנת שם משתמש",
-      "type": "fill_label",
-      "scope": "once",
-      "target": "מספר זהות",
-      "value": "{username}",
-      "timeout_seconds": 30,
-      "enabled": false
-    },
-    {
-      "name": "הזנת סיסמה מאובטחת",
-      "type": "fill_secret",
-      "scope": "once",
-      "target": "סיסמה",
-      "value": "",
-      "timeout_seconds": 30,
-      "enabled": false
+      "enabled": true
     },
     {
       "name": "אימות ידני",
@@ -62,24 +44,6 @@
       "scope": "per_record",
       "target": "{client_name}",
       "value": "גוש {block}, חלקה {parcel}",
-      "timeout_seconds": 30,
-      "enabled": true
-    },
-    {
-      "name": "לחיצה: לכניסה למערכת - הגשת תכניות מקוונות במערכת מבא\"ת (מבנה אחיד)",
-      "type": "click_role",
-      "scope": "once",
-      "target": "לכניסה למערכת - הגשת תכניות מקוונות במערכת מבא\"ת (מבנה אחיד)",
-      "value": "link",
-      "timeout_seconds": 30,
-      "enabled": true
-    },
-    {
-      "name": "לחיצה: כניסה",
-      "type": "click_role",
-      "scope": "once",
-      "target": "כניסה",
-      "value": "button",
       "timeout_seconds": 30,
       "enabled": true
     },
@@ -190,6 +154,42 @@
       "value": "button",
       "timeout_seconds": 30,
       "enabled": true
+    },
+    {
+      "name": "מעבר להזדהות",
+      "type": "manual",
+      "scope": "once",
+      "target": "",
+      "value": "לחץ באתר על הקישור להגשת בקשה והגע למסך ההזדהות. לאחר מכן לחץ במערכת על 'המשך אחרי פעולה ידנית'.",
+      "timeout_seconds": 30,
+      "enabled": false
+    },
+    {
+      "name": "בחירת כניסה בדרך אחרת",
+      "type": "click_text",
+      "scope": "once",
+      "target": "לכניסה בדרך אחרת",
+      "value": "",
+      "timeout_seconds": 30,
+      "enabled": false
+    },
+    {
+      "name": "הזנת שם משתמש",
+      "type": "fill_label",
+      "scope": "once",
+      "target": "מספר זהות",
+      "value": "{username}",
+      "timeout_seconds": 30,
+      "enabled": false
+    },
+    {
+      "name": "הזנת סיסמה מאובטחת",
+      "type": "fill_secret",
+      "scope": "once",
+      "target": "סיסמה",
+      "value": "",
+      "timeout_seconds": 30,
+      "enabled": false
     }
   ]
 }

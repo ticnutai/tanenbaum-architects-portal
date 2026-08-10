@@ -18,6 +18,7 @@ import { Route as ProjectsRouteImport } from './routes/projects'
 import { Route as RunRouteImport } from './routes/run'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as WorkflowRouteImport } from './routes/workflow'
+import { Route as AutomationsAutomationIdRouteImport } from './routes/automations_.$automationId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -64,6 +65,11 @@ const WorkflowRoute = WorkflowRouteImport.update({
   path: '/workflow',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AutomationsAutomationIdRoute = AutomationsAutomationIdRouteImport.update({
+  id: '/automations_/$automationId',
+  path: '/automations/$automationId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -75,6 +81,7 @@ export interface FileRoutesByFullPath {
   '/run': typeof RunRoute
   '/settings': typeof SettingsRoute
   '/workflow': typeof WorkflowRoute
+  '/automations/$automationId': typeof AutomationsAutomationIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -86,6 +93,7 @@ export interface FileRoutesByTo {
   '/run': typeof RunRoute
   '/settings': typeof SettingsRoute
   '/workflow': typeof WorkflowRoute
+  '/automations/$automationId': typeof AutomationsAutomationIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -98,6 +106,7 @@ export interface FileRoutesById {
   '/run': typeof RunRoute
   '/settings': typeof SettingsRoute
   '/workflow': typeof WorkflowRoute
+  '/automations_/$automationId': typeof AutomationsAutomationIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -111,6 +120,7 @@ export interface FileRouteTypes {
     | '/run'
     | '/settings'
     | '/workflow'
+    | '/automations/$automationId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -122,6 +132,7 @@ export interface FileRouteTypes {
     | '/run'
     | '/settings'
     | '/workflow'
+    | '/automations/$automationId'
   id:
     | '__root__'
     | '/'
@@ -133,6 +144,7 @@ export interface FileRouteTypes {
     | '/run'
     | '/settings'
     | '/workflow'
+    | '/automations_/$automationId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -145,6 +157,7 @@ export interface RootRouteChildren {
   RunRoute: typeof RunRoute
   SettingsRoute: typeof SettingsRoute
   WorkflowRoute: typeof WorkflowRoute
+  AutomationsAutomationIdRoute: typeof AutomationsAutomationIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -212,6 +225,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WorkflowRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/automations_/$automationId': {
+      id: '/automations_/$automationId'
+      path: '/automations/$automationId'
+      fullPath: '/automations/$automationId'
+      preLoaderRoute: typeof AutomationsAutomationIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -225,6 +245,7 @@ const rootRouteChildren: RootRouteChildren = {
   RunRoute: RunRoute,
   SettingsRoute: SettingsRoute,
   WorkflowRoute: WorkflowRoute,
+  AutomationsAutomationIdRoute: AutomationsAutomationIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
