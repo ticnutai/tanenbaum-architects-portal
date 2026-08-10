@@ -2,6 +2,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
   Camera,
   Chrome,
   ClipboardCopy,
@@ -486,6 +488,8 @@ export function LivePreview({
   const preview = live?.chrome.preview;
   const imageRef = useRef<HTMLImageElement>(null);
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wheelTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wheelDelta = useRef({ x: 0, y: 0, point: { x_ratio: 0.5, y_ratio: 0.5 } });
   const [control, setControl] = useState(false);
   const [learning, setLearning] = useState(false);
   const [inspectNext, setInspectNext] = useState(false);
@@ -543,6 +547,26 @@ export function LivePreview({
     if (clickTimer.current) clearTimeout(clickTimer.current);
     const point = coordinates(event.clientX, event.clientY);
     if (point) interact({ action: "double_click", ...point });
+  };
+  const queueScroll = (
+    point: { x_ratio: number; y_ratio: number },
+    deltaX: number,
+    deltaY: number,
+  ) => {
+    wheelDelta.current.x += deltaX;
+    wheelDelta.current.y += deltaY;
+    wheelDelta.current.point = point;
+    if (wheelTimer.current) clearTimeout(wheelTimer.current);
+    wheelTimer.current = setTimeout(() => {
+      const pending = wheelDelta.current;
+      wheelDelta.current = { x: 0, y: 0, point: pending.point };
+      void interact({
+        action: "scroll",
+        ...pending.point,
+        delta_x: Math.max(-1200, Math.min(1200, pending.x)),
+        delta_y: Math.max(-1200, Math.min(1200, pending.y)),
+      });
+    }, 120);
   };
   const saveCandidate = async () => {
     if (!candidate?.suggested_step) return;
@@ -706,6 +730,24 @@ export function LivePreview({
               {key}
             </Button>
           ))}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              interact({ action: "scroll", delta_y: -650, x_ratio: 0.5, y_ratio: 0.5 })
+            }
+          >
+            <ArrowUp className="size-4" />
+            גלול למעלה
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => interact({ action: "scroll", delta_y: 650, x_ratio: 0.5, y_ratio: 0.5 })}
+          >
+            <ArrowDown className="size-4" />
+            גלול למטה
+          </Button>
         </div>
         {preview?.url && (
           <div
@@ -730,8 +772,7 @@ export function LivePreview({
           if (!control && !learning) return;
           event.preventDefault();
           const point = coordinates(event.clientX, event.clientY);
-          if (point)
-            interact({ action: "scroll", ...point, delta_y: event.deltaY, delta_x: event.deltaX });
+          if (point) queueScroll(point, event.deltaX, event.deltaY);
         }}
       >
         {preview?.enabled && preview.available ? (
