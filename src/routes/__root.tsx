@@ -120,6 +120,10 @@ function RootShell({ children }: { children: ReactNode }) {
   return (
     <html lang="he" dir="rtl">
       <head>
+        <meta
+          httpEquiv="Content-Security-Policy"
+          content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:18473 http://127.0.0.1:18474 ws://127.0.0.1:18474;"
+        />
         <HeadContent />
       </head>
       <body>
@@ -162,12 +166,26 @@ function RootComponent() {
 }
 
 function SystemStatus() {
-  const [connected, setConnected] = useState(false);
+  const [pythonConnected, setPythonConnected] = useState(false);
+  const [cdpConnected, setCdpConnected] = useState(false);
   useEffect(() => {
-    const check = () => fetch("/api/run/status").then((r) => setConnected(r.ok)).catch(() => setConnected(false));
+    const check = async () => {
+      try {
+        const [python, chrome] = await Promise.all([fetch("/api/run/status"), fetch("/api/chrome/status")]);
+        setPythonConnected(python.ok);
+        const chromeStatus = chrome.ok ? await chrome.json() as { connected?: boolean } : {};
+        setCdpConnected(Boolean(chromeStatus.connected));
+      } catch {
+        setPythonConnected(false);
+        setCdpConnected(false);
+      }
+    };
     check();
     const timer = window.setInterval(check, 5000);
     return () => window.clearInterval(timer);
   }, []);
-  return <span className="hidden items-center gap-2 text-xs text-muted-foreground sm:flex"><i className={`size-2 rounded-full ${connected ? "bg-emerald-500" : "bg-destructive"}`} />{connected ? "מנוע Python מחובר" : "המנוע מנותק"}</span>;
+  return <span className="hidden items-center gap-4 text-xs text-muted-foreground sm:flex">
+    <span className="flex items-center gap-2"><i className={`size-2 rounded-full ${pythonConnected ? "bg-emerald-500" : "bg-destructive"}`} />{pythonConnected ? "Python מחובר" : "Python מנותק"}</span>
+    <span className="flex items-center gap-2"><i className={`size-2 rounded-full ${cdpConnected ? "bg-emerald-500" : "bg-destructive"}`} />{cdpConnected ? "Chrome CDP מחובר" : "Chrome CDP מנותק"}</span>
+  </span>;
 }

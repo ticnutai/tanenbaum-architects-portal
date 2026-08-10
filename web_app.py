@@ -13,6 +13,8 @@ import threading
 import time
 import uuid
 import webbrowser
+import urllib.error
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -59,6 +61,8 @@ class Runtime:
         self.chrome_import_current = 0
         self.chrome_import_total = 0
         self.chrome_import_warnings: list[str] = []
+        self.chrome_console_events: list[dict[str, Any]] = []
+        self.chrome_console_monitor_thread: threading.Thread | None = None
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         self.automation_dir = self.store.base_dir / "automations"
         self.automation_dir.mkdir(parents=True, exist_ok=True)
@@ -121,6 +125,68 @@ class Runtime:
             "warnings": self.chrome_import_warnings[-10:],
         }
 
+    def chrome_cdp_status(self) -> dict[str, Any]:
+        port = int(self.store.data.get("chrome_debug_port", 9222))
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1) as response:
+                version = json.load(response)
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=1) as response:
+                targets = json.load(response)
+            pages = [item for item in targets if item.get("type") == "page" and str(item.get("url", "")).startswith("http")]
+            return {
+                "connected": True,
+                "browser": str(version.get("Browser") or "Chrome"),
+                "port": port,
+                "pages": [{"title": str(item.get("title") or ""), "url": str(item.get("url") or "")} for item in pages],
+                "profile_directory": str(self.store.data.get("chrome_profile_directory") or "Default"),
+                "console_events": len(self.chrome_console_events),
+            }
+        except (OSError, urllib.error.URLError, json.JSONDecodeError):
+            return {
+                "connected": False, "browser": "", "port": port, "pages": [],
+                "profile_directory": str(self.store.data.get("chrome_profile_directory") or "Default"),
+                "console_events": len(self.chrome_console_events),
+            }
+
+    def ensure_chrome_console_monitor(self) -> None:
+        if self.chrome_console_monitor_thread and self.chrome_console_monitor_thread.is_alive():
+            return
+
+        def monitor() -> None:
+            try:
+                from playwright.sync_api import sync_playwright
+                with sync_playwright() as playwright:
+                    browser = playwright.chromium.connect_over_cdp(
+                        f"http://127.0.0.1:{int(self.store.data.get('chrome_debug_port', 9222))}", timeout=5000
+                    )
+                    attached: set[int] = set()
+
+                    def append_event(level: str, text: str, page_url: str) -> None:
+                        event = {
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "level": level,
+                            "text": str(text).replace("\x00", "")[:3000],
+                            "url": str(page_url)[:1000],
+                        }
+                        with self.lock:
+                            self.chrome_console_events.append(event)
+                            del self.chrome_console_events[:-500]
+
+                    while browser.is_connected():
+                        for context in browser.contexts:
+                            for page in context.pages:
+                                if id(page) in attached:
+                                    continue
+                                page.on("console", lambda message, current=page: append_event(message.type, message.text, current.url))
+                                page.on("pageerror", lambda error, current=page: append_event("pageerror", str(error), current.url))
+                                attached.add(id(page))
+                        time.sleep(0.5)
+            except Exception as exc:
+                self.log(f"ניטור Console של Chrome נותק: {exc}")
+
+        self.chrome_console_monitor_thread = threading.Thread(target=monitor, daemon=True)
+        self.chrome_console_monitor_thread.start()
+
     def workflow_path(self, automation_id: str | None = None) -> Path:
         safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", automation_id or self.active_automation_id())
         return self.automation_dir / f"{safe_id or 'mavat'}.json"
@@ -129,6 +195,8 @@ class Runtime:
         automation = next((item for item in self.automations() if str(item.get("id")) == automation_id), None)
         if not automation:
             raise ValueError("האוטומציה לא נמצאה")
+        if automation_id == self.active_automation_id():
+            return automation
         if self.runner_thread and self.runner_thread.is_alive():
             raise RuntimeError("לא ניתן להחליף אוטומציה בזמן הרצה")
         if self.recorder_thread and self.recorder_thread.is_alive():
@@ -885,10 +953,19 @@ def api_open_chrome() -> Response:
             "--new-window",
             MAVAT_URL,
         ], cwd=str(ROOT_DIR))
+        threading.Timer(2.0, runtime.ensure_chrome_console_monitor).start()
         runtime.log(f"Chrome נפתח בדף השירות של מבא״ת עם הפרופיל {profile_directory}")
         return jsonify({"ok": True})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.get("/api/chrome/status")
+def api_chrome_status() -> Response:
+    status = runtime.chrome_cdp_status()
+    if status["connected"]:
+        runtime.ensure_chrome_console_monitor()
+    return jsonify(status)
 
 
 @app.get("/api/logs")
@@ -914,8 +991,31 @@ def api_logs() -> Response:
 @app.get("/api/console")
 def api_console() -> Response:
     log_path = runtime.log_path()
-    content = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
-    return jsonify({"content": content})
+    application_log = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+    cdp = runtime.chrome_cdp_status()
+    connection_lines = [
+        "=== מצב חיבורים ===",
+        "React: מחובר http://127.0.0.1:18474",
+        "Python: מחובר http://127.0.0.1:18473",
+        f"Chrome CDP: {'מחובר' if cdp['connected'] else 'מנותק'} http://127.0.0.1:{cdp['port']}",
+        f"Chrome: {cdp['browser'] or 'לא זמין'} | פרופיל: {cdp['profile_directory']}",
+        f"דפים פעילים: {len(cdp['pages'])} | אירועי Console: {len(runtime.chrome_console_events)}",
+        "",
+        "=== יומן מנוע Python ===",
+        application_log or "היומן ריק.",
+        "",
+        "=== Chrome Console (CDP) ===",
+    ]
+    with runtime.lock:
+        console_events = list(runtime.chrome_console_events)
+    if console_events:
+        connection_lines.extend(
+            f"[{event['timestamp']}] [{event['level']}] {event['text']}\n  {event['url']}"
+            for event in console_events
+        )
+    else:
+        connection_lines.append("טרם נקלטו הודעות Console מ-Chrome.")
+    return jsonify({"content": "\n".join(connection_lines), "connections": cdp})
 
 
 @app.get("/api/logs/export.csv")

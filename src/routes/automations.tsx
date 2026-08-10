@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Bot, Copy, ListOrdered, Plus, Settings2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -15,6 +15,7 @@ import { mavatApi, type AutomationsData, type AutomationSummary } from "@/lib/ma
 export const Route = createFileRoute("/automations")({ component: AutomationsPage });
 
 function AutomationsPage() {
+  const navigate = useNavigate();
   const [data, setData] = useState<AutomationsData>({ automations: [], active_id: "" });
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
@@ -42,6 +43,15 @@ function AutomationsPage() {
     await load();
   };
 
+  const openAutomation = async (id: string) => {
+    try {
+      await activate(id);
+      await navigate({ to: "/automations/$automationId", params: { automationId: id } });
+    } catch (error) {
+      toast.error((error as Error).message || "לא ניתן לפתוח את האוטומציה");
+    }
+  };
+
   const remove = async (item: AutomationSummary) => {
     if (!confirm(`למחוק את „${item.name}” ואת כל השלבים שלה?`)) return;
     try { await mavatApi(`/api/automations/${item.id}`, { method: "DELETE" }); await load(); toast.success("האוטומציה נמחקה"); }
@@ -66,7 +76,7 @@ function AutomationsPage() {
             <CardContent className="flex flex-1 flex-col gap-4">
               <div className="flex items-center gap-2 rounded-md bg-muted/60 px-3 py-2 text-sm"><ListOrdered className="size-4 text-accent" /><strong>{item.steps_count}</strong> שלבים מוגדרים</div>
               <div className="mt-auto flex gap-2">
-                <Button className="flex-1" asChild onClick={() => activate(item.id)}><Link to="/automations/$automationId" params={{ automationId: item.id }}><Settings2 className="size-4" />פתיחה והגדרה</Link></Button>
+                <Button className="flex-1" onClick={() => openAutomation(item.id)}><Settings2 className="size-4" />פתיחה והגדרה</Button>
                 <Button variant="outline" size="icon" title="שכפול" onClick={() => { setSourceId(item.id); setName(`${item.name} — עותק`); setDescription(item.description); setCreating(true); }}><Copy className="size-4" /></Button>
                 <Button variant="ghost" size="icon" title="מחיקה" disabled={item.active} onClick={() => remove(item)}><Trash2 className="size-4" /></Button>
               </div>

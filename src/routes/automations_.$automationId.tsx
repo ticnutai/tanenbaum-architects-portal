@@ -25,12 +25,20 @@ function AutomationWorkspace() {
   const [item, setItem] = useState<AutomationSummary | null>(null);
 
   useEffect(() => {
-    Promise.all([
-      mavatApi(`/api/automations/${automationId}/activate`, { method: "POST" }),
-      mavatApi<AutomationsData>("/api/automations"),
-    ]).then(([, data]) => setItem(data.automations.find((automation) => automation.id === automationId) || null))
-      .catch((error) => { toast.error(error.message); navigate({ to: "/automations" }); });
-  }, [automationId, navigate]);
+    const load = async () => {
+      try {
+        await mavatApi(`/api/automations/${automationId}/activate`, { method: "POST" });
+        const data = await mavatApi<AutomationsData>("/api/automations");
+        const automation = data.automations.find((candidate) => candidate.id === automationId);
+        if (!automation) throw new Error("האוטומציה לא נמצאה");
+        setItem(automation);
+      } catch (error) {
+        toast.error((error as Error).message || "לא ניתן לפתוח את האוטומציה");
+        await navigate({ to: "/automations" });
+      }
+    };
+    void load();
+  }, [automationId]);
 
   return <div className="mx-auto max-w-6xl space-y-8">
     <PageHeader eyebrow="סביבת אוטומציה" title={item?.name || "טוען אוטומציה…"} description={item?.description || "הגדר את התהליך לפי הסדר, ולאחר מכן בצע הרצת בדיקה."}
