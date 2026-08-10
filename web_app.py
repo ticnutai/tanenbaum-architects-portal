@@ -1295,6 +1295,11 @@ def api_chrome_interact() -> Response:
         "text": str(payload.get("text") or "")[:5000],
     }
     try:
+        pages_before = {
+            str(page.get("id"))
+            for page in runtime.chrome_cdp_status().get("pages", [])
+            if page.get("id")
+        }
         if payload.get("record"):
             runtime.recorder_suppressed_until = time.time() + 2.5
         result = runtime.chrome_interact(clean_payload)
@@ -1302,6 +1307,20 @@ def api_chrome_interact() -> Response:
         return jsonify({"ok": False, "error": str(exc)}), 500
     if not result.get("ok"):
         return jsonify(result), 400
+    if action in {"click", "double_click"}:
+        pages_after = runtime.chrome_cdp_status().get("pages", [])
+        opened = [page for page in pages_after if str(page.get("id") or "") not in pages_before]
+        if opened:
+            new_page = opened[0]
+            runtime.chrome_preview_target_id = str(new_page.get("id") or "")
+            runtime.chrome_preview_frame = b""
+            if runtime.chrome_preview_process and runtime.chrome_preview_process.poll() is None:
+                runtime.chrome_preview_process.terminate()
+            result["switched_target"] = {
+                "id": runtime.chrome_preview_target_id,
+                "title": str(new_page.get("title") or ""),
+                "url": str(new_page.get("url") or ""),
+            }
     detected = result.get("detected")
     if payload.get("record") and isinstance(detected, dict):
         result["suggested_step"] = suggested_step_from_detection(
