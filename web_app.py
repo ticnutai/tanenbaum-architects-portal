@@ -81,6 +81,7 @@ class Runtime:
         self.chrome_preview_updated_at = ""
         self.chrome_preview_frames = 0
         self.chrome_interaction_lock = threading.Lock()
+        self.recorder_suppressed_until = 0.0
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         self.automation_dir = self.store.base_dir / "automations"
         self.automation_dir.mkdir(parents=True, exist_ok=True)
@@ -327,6 +328,9 @@ class Runtime:
             handle.write(f"[{stamp}] {message}\n")
 
     def recorded_step(self, step: dict[str, Any]) -> None:
+        if time.time() < self.recorder_suppressed_until:
+            self.log("הפעולה נקלטה במצב לימוד וממתינה לאישור לפני שמירה")
+            return
         workflow = self.read_workflow()
         workflow.setdefault("steps", []).append(step)
         self.write_workflow(workflow)
@@ -1291,6 +1295,8 @@ def api_chrome_interact() -> Response:
         "text": str(payload.get("text") or "")[:5000],
     }
     try:
+        if payload.get("record"):
+            runtime.recorder_suppressed_until = time.time() + 2.5
         result = runtime.chrome_interact(clean_payload)
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500

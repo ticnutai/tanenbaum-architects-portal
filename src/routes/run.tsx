@@ -60,7 +60,7 @@ type PreviewState = {
   frames: number;
 };
 type ConsoleEvent = { timestamp: string; level: string; text: string; url: string };
-type LiveData = {
+export type LiveData = {
   chrome: {
     connected: boolean;
     browser: string;
@@ -466,13 +466,14 @@ type SmartCandidate = {
   learning_screenshot?: string;
 };
 
-function LivePreview({
+export function LivePreview({
   live,
   full,
   onFull,
   onToggle,
   onSelect,
   onFocus,
+  onStepSaved,
 }: {
   live: LiveData | null;
   full: boolean;
@@ -480,6 +481,7 @@ function LivePreview({
   onToggle: () => void;
   onSelect: (id: string) => void;
   onFocus: () => void;
+  onStepSaved?: () => void | Promise<void>;
 }) {
   const preview = live?.chrome.preview;
   const imageRef = useRef<HTMLImageElement>(null);
@@ -548,6 +550,7 @@ function LivePreview({
       method: "POST",
       body: JSON.stringify({ step: candidate.suggested_step }),
     });
+    await onStepSaved?.();
     toast.success("הפעולה נוספה לסוף שלבי העבודה");
     setCandidate(null);
   };

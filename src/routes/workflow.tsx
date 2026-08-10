@@ -32,6 +32,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { mavatApi, type WorkflowData, type WorkflowStep } from "@/lib/mavat-api";
+import { LivePreview, type LiveData } from "@/routes/run";
 
 export const Route = createFileRoute("/workflow")({ component: WorkflowPage });
 const actions = [
@@ -77,10 +78,19 @@ function WorkflowPage() {
   const [importing, setImporting] = useState(false);
   const [sourceId, setSourceId] = useState("");
   const [sourceSelected, setSourceSelected] = useState<Set<number>>(new Set());
+  const [live, setLive] = useState<LiveData | null>(null);
+  const [fullPreview, setFullPreview] = useState(false);
   const dragged = useRef<number | null>(null);
   const lastSelected = useRef<number | null>(null);
   const load = async () => setData(await mavatApi<WorkflowData>("/api/workflow"));
   const poll = async () => setRecording(await mavatApi("/api/recording/status"));
+  const loadLive = async () => {
+    try {
+      setLive(await mavatApi<LiveData>("/api/chrome/live"));
+    } catch {
+      /* transient while Chrome or Python starts */
+    }
+  };
   useEffect(() => {
     load().catch((e) => toast.error(e.message));
     poll();
@@ -90,6 +100,11 @@ function WorkflowPage() {
     }, 1500);
     return () => clearInterval(timer);
   }, [recording.state]);
+  useEffect(() => {
+    loadLive();
+    const timer = setInterval(loadLive, 900);
+    return () => clearInterval(timer);
+  }, []);
   const visible = useMemo(
     () =>
       data.workflow.steps
@@ -202,6 +217,23 @@ function WorkflowPage() {
       toast.error((error as Error).message);
     }
   };
+  const togglePreview = async () => {
+    await mavatApi("/api/chrome/preview/toggle", {
+      method: "POST",
+      body: JSON.stringify({ enabled: !live?.chrome.preview.enabled }),
+    });
+    await loadLive();
+  };
+  const selectPreviewTab = async (targetId: string) => {
+    await mavatApi("/api/chrome/preview/select", {
+      method: "POST",
+      body: JSON.stringify({ target_id: targetId }),
+    });
+    await loadLive();
+  };
+  const focusChrome = async () => {
+    await mavatApi("/api/chrome/focus", { method: "POST" });
+  };
 
   return (
     <div className="mx-auto max-w-6xl space-y-8">
@@ -248,6 +280,29 @@ function WorkflowPage() {
           <strong className="text-sm">{recording.message}</strong>
         </CardContent>
       </Card>
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold">דפדפן ההקלטה</p>
+            <p className="text-sm text-muted-foreground">
+              לחץ על „מצב לימוד”, בצע פעולה בחלון החי ובדוק את השלב המוצע. הפעולה לא תתווסף לרשימה
+              עד שתלחץ „שמור כשלב”.
+            </p>
+          </div>
+          <Badge variant={recording.state === "recording" ? "destructive" : "secondary"}>
+            {recording.state === "recording" ? "הקלטה פעילה" : "מוכן לבדיקה"}
+          </Badge>
+        </div>
+        <LivePreview
+          live={live}
+          full={fullPreview}
+          onFull={() => setFullPreview((value) => !value)}
+          onToggle={() => togglePreview().catch((error) => toast.error(error.message))}
+          onSelect={(id) => selectPreviewTab(id).catch((error) => toast.error(error.message))}
+          onFocus={() => focusChrome().catch((error) => toast.error(error.message))}
+          onStepSaved={load}
+        />
+      </section>
       <Card>
         <CardHeader>
           <CardTitle className="font-display text-2xl">רשימת השלבים</CardTitle>
