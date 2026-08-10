@@ -54,6 +54,10 @@ class Runtime:
         self.manual_message = ""
         self.current_step = 0
         self.current_step_name = ""
+        self.current_step_action = ""
+        self.current_step_target = ""
+        self.run_started_at = ""
+        self.run_paused_from = ""
         self.last_error: dict[str, Any] = {}
         self.chrome_import_thread: threading.Thread | None = None
         self.chrome_import_state = "idle"
@@ -63,6 +67,16 @@ class Runtime:
         self.chrome_import_warnings: list[str] = []
         self.chrome_console_events: list[dict[str, Any]] = []
         self.chrome_console_monitor_thread: threading.Thread | None = None
+        self.chrome_preview_thread: threading.Thread | None = None
+        self.chrome_preview_process: subprocess.Popen[bytes] | None = None
+        self.chrome_preview_frame: bytes = b""
+        self.chrome_preview_enabled = True
+        self.chrome_preview_target_id = ""
+        self.chrome_preview_url = ""
+        self.chrome_preview_title = ""
+        self.chrome_preview_error = ""
+        self.chrome_preview_updated_at = ""
+        self.chrome_preview_frames = 0
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         self.automation_dir = self.store.base_dir / "automations"
         self.automation_dir.mkdir(parents=True, exist_ok=True)
@@ -137,16 +151,80 @@ class Runtime:
                 "connected": True,
                 "browser": str(version.get("Browser") or "Chrome"),
                 "port": port,
-                "pages": [{"title": str(item.get("title") or ""), "url": str(item.get("url") or "")} for item in pages],
+                "pages": [{"id": str(item.get("id") or ""), "title": str(item.get("title") or ""), "url": str(item.get("url") or "")} for item in pages],
                 "profile_directory": str(self.store.data.get("chrome_profile_directory") or "Default"),
                 "console_events": len(self.chrome_console_events),
+                "preview": self.chrome_preview_status(),
             }
         except (OSError, urllib.error.URLError, json.JSONDecodeError):
             return {
                 "connected": False, "browser": "", "port": port, "pages": [],
                 "profile_directory": str(self.store.data.get("chrome_profile_directory") or "Default"),
                 "console_events": len(self.chrome_console_events),
+                "preview": self.chrome_preview_status(),
             }
+
+    def chrome_preview_status(self) -> dict[str, Any]:
+        return {
+            "enabled": self.chrome_preview_enabled,
+            "available": bool(self.chrome_preview_frame),
+            "target_id": self.chrome_preview_target_id,
+            "url": self.chrome_preview_url,
+            "title": self.chrome_preview_title,
+            "error": self.chrome_preview_error,
+            "updated_at": self.chrome_preview_updated_at,
+            "frames": self.chrome_preview_frames,
+        }
+
+    def ensure_chrome_preview(self) -> None:
+        if self.chrome_preview_thread and self.chrome_preview_thread.is_alive():
+            return
+
+        def monitor() -> None:
+            while True:
+                if not self.chrome_preview_enabled:
+                    time.sleep(0.5)
+                    continue
+                try:
+                    self.chrome_preview_error = "מתחבר ל-Chrome..."
+                    creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+                    selected_target = self.chrome_preview_target_id
+                    process = subprocess.Popen(
+                        [sys.executable, "-m", "mavat_app.preview_worker",
+                         str(int(self.store.data.get("chrome_debug_port", 9222))), selected_target],
+                        cwd=str(ROOT_DIR), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                        creationflags=creation_flags,
+                    )
+                    self.chrome_preview_process = process
+                    assert process.stdout is not None
+                    while process.poll() is None and self.chrome_preview_enabled:
+                        header_line = process.stdout.readline()
+                        if not header_line:
+                            break
+                        header = json.loads(header_line.decode("utf-8"))
+                        length = int(header.get("length") or 0)
+                        frame = process.stdout.read(length) if length else b""
+                        if length:
+                            process.stdout.read(1)
+                        with self.lock:
+                            if frame:
+                                self.chrome_preview_frame = frame
+                                self.chrome_preview_frames += 1
+                                self.chrome_preview_updated_at = datetime.now().isoformat(timespec="seconds")
+                            self.chrome_preview_target_id = str(header.get("target_id") or self.chrome_preview_target_id)
+                            self.chrome_preview_url = str(header.get("url") or self.chrome_preview_url)
+                            self.chrome_preview_title = str(header.get("title") or self.chrome_preview_title)
+                            self.chrome_preview_error = str(header.get("error") or "")
+                except Exception as exc:
+                    self.chrome_preview_error = f"Chrome CDP מנותק: {exc}"
+                finally:
+                    if self.chrome_preview_process and self.chrome_preview_process.poll() is None:
+                        self.chrome_preview_process.terminate()
+                    self.chrome_preview_process = None
+                time.sleep(1.0)
+
+        self.chrome_preview_thread = threading.Thread(target=monitor, daemon=True)
+        self.chrome_preview_thread.start()
 
     def ensure_chrome_console_monitor(self) -> None:
         if self.chrome_console_monitor_thread and self.chrome_console_monitor_thread.is_alive():
@@ -272,6 +350,10 @@ class Runtime:
             "manual_message": self.manual_message,
             "current_step": self.current_step,
             "current_step_name": self.current_step_name,
+            "current_step_action": self.current_step_action,
+            "current_step_target": self.current_step_target,
+            "started_at": self.run_started_at,
+            "paused_from": self.run_paused_from,
             "last_error": self.last_error,
         }
 
@@ -299,6 +381,10 @@ class Runtime:
         self.manual_message = ""
         self.current_step = 0
         self.current_step_name = ""
+        self.current_step_action = ""
+        self.current_step_target = ""
+        self.run_started_at = datetime.now().isoformat(timespec="seconds")
+        self.run_paused_from = ""
         self.last_error = {}
 
         def status(row: int, state: str, detail: str) -> None:
@@ -315,6 +401,11 @@ class Runtime:
             self.run_current_row = row
             self.current_step = step_number
             self.current_step_name = name
+            steps = self.read_workflow().get("steps", [])
+            if 0 < step_number <= len(steps):
+                active_step = steps[step_number - 1]
+                self.current_step_action = str(active_step.get("type") or "")
+                self.current_step_target = str(active_step.get("target") or "")
             if state == "running":
                 self.run_message = f"מבצע שלב {step_number}: {name}"
 
@@ -749,6 +840,30 @@ def api_run_stop() -> Response:
     return jsonify({"ok": True, **runtime.run_status()})
 
 
+@app.post("/api/run/pause")
+def api_run_pause() -> Response:
+    if not runtime.runner or runtime.run_state != "running":
+        return jsonify({"ok": False, "error": "אין כרגע הרצה פעילה שניתן להשהות"}), 400
+    runtime.runner.pause()
+    runtime.run_paused_from = runtime.run_message
+    runtime.run_state = "paused"
+    runtime.run_message = "ההרצה מושהית על ידי המשתמש"
+    runtime.log(f"ההרצה הושהתה בשלב {runtime.current_step}: {runtime.current_step_name}")
+    return jsonify({"ok": True, **runtime.run_status()})
+
+
+@app.post("/api/run/resume")
+def api_run_resume() -> Response:
+    if not runtime.runner or runtime.run_state != "paused":
+        return jsonify({"ok": False, "error": "אין כרגע הרצה מושהית"}), 400
+    runtime.runner.resume()
+    runtime.run_state = "running"
+    runtime.run_message = runtime.run_paused_from or "ממשיך בהרצה"
+    runtime.run_paused_from = ""
+    runtime.log("ההרצה חודשה")
+    return jsonify({"ok": True, **runtime.run_status()})
+
+
 @app.post("/api/run/continue")
 def api_run_continue() -> Response:
     if not runtime.runner or runtime.run_state != "manual":
@@ -953,7 +1068,7 @@ def api_open_chrome() -> Response:
             "--new-window",
             MAVAT_URL,
         ], cwd=str(ROOT_DIR))
-        threading.Timer(2.0, runtime.ensure_chrome_console_monitor).start()
+        threading.Timer(2.0, runtime.ensure_chrome_preview).start()
         runtime.log(f"Chrome נפתח בדף השירות של מבא״ת עם הפרופיל {profile_directory}")
         return jsonify({"ok": True})
     except Exception as exc:
@@ -964,8 +1079,103 @@ def api_open_chrome() -> Response:
 def api_chrome_status() -> Response:
     status = runtime.chrome_cdp_status()
     if status["connected"]:
-        runtime.ensure_chrome_console_monitor()
+        runtime.ensure_chrome_preview()
     return jsonify(status)
+
+
+@app.get("/api/chrome/live")
+def api_chrome_live() -> Response:
+    status = runtime.chrome_cdp_status()
+    if status["connected"]:
+        runtime.ensure_chrome_preview()
+    with runtime.lock:
+        console_events = list(runtime.chrome_console_events[-40:])
+    return jsonify({
+        "chrome": status,
+        "run": runtime.run_status(),
+        "console": console_events,
+        "server_time": datetime.now().isoformat(timespec="seconds"),
+    })
+
+
+@app.get("/api/chrome/preview.jpg")
+def api_chrome_preview_image() -> Response:
+    runtime.ensure_chrome_preview()
+    with runtime.lock:
+        frame = runtime.chrome_preview_frame
+    if not frame:
+        return jsonify({"ok": False, "error": runtime.chrome_preview_error or "התצוגה עדיין נטענת"}), 503
+    response = Response(frame, mimetype="image/jpeg")
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    if request.args.get("download") == "1":
+        response.headers["Content-Disposition"] = f'attachment; filename="mavat-live-{datetime.now().strftime("%Y%m%d-%H%M%S")}.jpg"'
+    return response
+
+
+@app.post("/api/chrome/preview/select")
+def api_chrome_preview_select() -> Response:
+    target_id = str((request.get_json(force=True) or {}).get("target_id") or "")
+    pages = runtime.chrome_cdp_status().get("pages", [])
+    if target_id and not any(str(page.get("id")) == target_id for page in pages):
+        return jsonify({"ok": False, "error": "הלשונית שנבחרה אינה זמינה יותר"}), 404
+    runtime.chrome_preview_target_id = target_id
+    runtime.chrome_preview_frame = b""
+    if runtime.chrome_preview_process and runtime.chrome_preview_process.poll() is None:
+        runtime.chrome_preview_process.terminate()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/chrome/preview/toggle")
+def api_chrome_preview_toggle() -> Response:
+    runtime.chrome_preview_enabled = bool((request.get_json(force=True) or {}).get("enabled", True))
+    if runtime.chrome_preview_enabled:
+        runtime.ensure_chrome_preview()
+    else:
+        with runtime.lock:
+            runtime.chrome_preview_frame = b""
+        if runtime.chrome_preview_process and runtime.chrome_preview_process.poll() is None:
+            runtime.chrome_preview_process.terminate()
+    return jsonify({"ok": True, **runtime.chrome_preview_status()})
+
+
+@app.post("/api/chrome/focus")
+def api_chrome_focus() -> Response:
+    if os.name != "nt":
+        return jsonify({"ok": False, "error": "העברת Chrome לחזית נתמכת כרגע ב-Windows בלבד"}), 400
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        handles: list[int] = []
+        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def collect(hwnd: int, _lparam: int) -> bool:
+            class_name = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(hwnd, class_name, 256)
+            if user32.IsWindowVisible(hwnd) and class_name.value == "Chrome_WidgetWin_1":
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                process = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid.value)
+                if process:
+                    try:
+                        path_buffer = ctypes.create_unicode_buffer(1024)
+                        path_size = wintypes.DWORD(len(path_buffer))
+                        if ctypes.windll.kernel32.QueryFullProcessImageNameW(process, 0, path_buffer, ctypes.byref(path_size)):
+                            if Path(path_buffer.value).name.casefold() == "chrome.exe":
+                                handles.append(hwnd)
+                    finally:
+                        ctypes.windll.kernel32.CloseHandle(process)
+            return True
+
+        user32.EnumWindows(callback_type(collect), 0)
+        if not handles:
+            return jsonify({"ok": False, "error": "לא נמצא חלון Chrome פתוח"}), 404
+        hwnd = handles[0]
+        user32.ShowWindow(hwnd, 9)
+        user32.SetForegroundWindow(hwnd)
+        return jsonify({"ok": True})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @app.get("/api/logs")
@@ -990,6 +1200,7 @@ def api_logs() -> Response:
 
 @app.get("/api/console")
 def api_console() -> Response:
+    runtime.ensure_chrome_console_monitor()
     log_path = runtime.log_path()
     application_log = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
     cdp = runtime.chrome_cdp_status()

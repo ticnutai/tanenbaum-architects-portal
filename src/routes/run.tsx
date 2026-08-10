@@ -1,24 +1,691 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
-import { AlertTriangle, Chrome, ClipboardCopy, FileSpreadsheet, PauseCircle, Play, Square, TestTube2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  AlertTriangle,
+  Camera,
+  Chrome,
+  ClipboardCopy,
+  Download,
+  Eye,
+  EyeOff,
+  FileSpreadsheet,
+  Focus,
+  Maximize2,
+  Minimize2,
+  Monitor,
+  Pause,
+  Play,
+  RefreshCw,
+  Square,
+  Terminal,
+  TestTube2,
+  Wifi,
+  WifiOff,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/page-header";
 import { AutomationContext } from "@/components/automation-context";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
-import { copyMavatText, mavatApi, type SettingsData, type WorkflowData } from "@/lib/mavat-api";
+import {
+  copyMavatText,
+  mavatApi,
+  type RunState,
+  type SettingsData,
+  type WorkflowData,
+} from "@/lib/mavat-api";
 
 export const Route = createFileRoute("/run")({ component: RunPage });
-function RunPage(){
-  const [settings,setSettings]=useState<SettingsData|null>(null);const [profiles,setProfiles]=useState<WorkflowData["profiles"]>({});const [profileId,setProfileId]=useState("");const [dry,setDry]=useState(false);
-  const load=async()=>{const [s,w]=await Promise.all([mavatApi<SettingsData>("/api/settings"),mavatApi<WorkflowData>("/api/workflow")]);setSettings(s);setProfiles(w.profiles);setProfileId(current=>current||Object.keys(w.profiles)[0]||"")};
-  useEffect(()=>{load();const timer=setInterval(load,1400);return()=>clearInterval(timer)},[]);const state=settings?.run;const running=["running","manual","stopping"].includes(state?.state||"");const progress=state?.total_rows?Math.round((state.current_row/state.total_rows)*100):0;
-  const action=async(name:"start"|"stop"|"continue")=>{try{const body=name==="start"?JSON.stringify({profile_id:profileId,dry_run:dry}):undefined;const result=await mavatApi<{message?:string}>(`/api/run/${name}`,{method:"POST",body});toast.success(result.message||"הפעולה בוצעה");await load()}catch(e){toast.error((e as Error).message)}};
-  const openChrome=async()=>{try{await mavatApi("/api/chrome/open",{method:"POST"});toast.success("Chrome נפתח בדף מבא״ת")}catch(e){toast.error((e as Error).message)}};
-  return <div className="mx-auto max-w-5xl space-y-8"><AutomationContext/><PageHeader eyebrow="מנוע הרצה" title="הפעלה" description="התחל במצב בדיקה. לאחר אימות השלבים בטל אותו והריץ את התהליך בחלון Chrome של המערכת." actions={<Button variant="outline" onClick={openChrome}><Chrome className="size-4"/>פתח Chrome בלבד</Button>}/>
-    <div className="grid gap-4 md:grid-cols-2"><Card><CardHeader><CardTitle className="font-display text-xl">הגדרות הרצה</CardTitle><CardDescription>בחר מקור נתונים, פרופיל ומצב הפעלה</CardDescription></CardHeader><CardContent className="space-y-4"><div className="rounded-md border p-3"><div className="flex items-center gap-2"><FileSpreadsheet className="size-4 text-accent"/><strong className="text-sm">{settings?.data_file_name||"לא נבחר קובץ נתונים"}</strong></div><p className="mt-1 text-xs text-muted-foreground">את הקובץ ניתן להחליף בדף נתוני לקוחות.</p></div><label className="block space-y-2 text-sm font-medium">פרופיל כניסה<select className="h-10 w-full rounded-md border bg-background px-3" value={profileId} onChange={e=>setProfileId(e.target.value)}>{!Object.keys(profiles).length&&<option value="">לא הוגדר פרופיל</option>}{Object.entries(profiles).map(([id,p])=><option key={id} value={id}>{p.name} · {p.username} {p.has_password?"🔒":"🔑"}</option>)}</select></label><div className={`flex items-center justify-between rounded-md border p-3 ${dry?"border-accent/40 bg-accent/5":"border-emerald-500/40 bg-emerald-500/5"}`}><div><p className="text-sm font-medium">{dry?"מצב בדיקה בלבד":"הרצה אמיתית ב-Chrome"}</p><p className="text-xs text-muted-foreground">{dry?"ללא פתיחת דפדפן וללא שליחת נתונים":"הפעולות יבוצעו בפועל; המערכת תעצור בכל שלב ידני"}</p></div><Switch checked={dry} onCheckedChange={setDry}/></div><div className="flex gap-2"><Button className="flex-1" onClick={()=>action("start")} disabled={running}><Play className="size-4"/>{dry?"התחל בדיקה":"התחל אוטומציה אמיתית"}</Button>{running&&<Button variant="destructive" onClick={()=>action("stop")}><Square className="size-4"/>עצור</Button>}</div></CardContent></Card>
-      <Card className={state?.state==="manual"?"border-accent":""}><CardHeader><CardTitle className="flex items-center gap-2 font-display text-xl"><TestTube2 className="size-5 text-accent"/>מצב נוכחי</CardTitle><CardDescription>{state?.message||"מוכן להפעלה"}</CardDescription></CardHeader><CardContent className="space-y-5"><Progress value={progress}/><div className="rounded-md border bg-muted/40 p-4"><p className="font-mono text-xs">מצב: {state?.state||"idle"}</p><p className="mt-2 text-sm">רשומה {state?.current_row||0} מתוך {state?.total_rows||0}</p>{state?.current_step? <p className="mt-1 text-sm">שלב {state.current_step}: {state.current_step_name}</p>:null}</div>{state?.state==="manual"&&<div className="rounded-md border border-accent bg-accent/10 p-4"><div className="flex items-start gap-3"><PauseCircle className="mt-0.5 size-5 text-accent"/><div><strong>נדרשת פעולה ידנית</strong><p className="mt-1 text-sm text-muted-foreground">{state.manual_message}</p></div></div><Button className="mt-4 w-full" onClick={()=>action("continue")}><Play className="size-4"/>ביצעתי — המשך בהרצה</Button></div>}{state?.last_error?.error&&<div className="rounded-md border border-destructive bg-destructive/5 p-4"><div className="flex gap-3"><AlertTriangle className="mt-0.5 size-5 text-destructive"/><div><strong>שלב {state.last_error.step} נכשל: {state.last_error.step_name}</strong><p className="mt-1 text-sm text-destructive">{state.last_error.error}</p><p className="mt-2 break-all font-mono text-xs text-muted-foreground" dir="ltr">{state.last_error.url}</p></div></div><div className="mt-4 flex gap-2"><Button variant="outline" size="sm" onClick={()=>copyMavatText(JSON.stringify(state.last_error,null,2))}><ClipboardCopy className="size-4"/>העתקת פרטי הכשל</Button>{state.last_error.screenshot&&<Button variant="outline" size="sm" asChild><a href="/api/run/error-screenshot" target="_blank">פתיחת צילום הכשל</a></Button>}</div></div>}</CardContent></Card></div>
-  </div>;
+
+type ChromePage = { id: string; title: string; url: string };
+type PreviewState = {
+  enabled: boolean;
+  available: boolean;
+  target_id: string;
+  url: string;
+  title: string;
+  error: string;
+  updated_at: string;
+  frames: number;
+};
+type ConsoleEvent = { timestamp: string; level: string; text: string; url: string };
+type LiveData = {
+  chrome: {
+    connected: boolean;
+    browser: string;
+    port: number;
+    profile_directory: string;
+    pages: ChromePage[];
+    preview: PreviewState;
+  };
+  run: RunState;
+  console: ConsoleEvent[];
+  server_time: string;
+};
+
+const stateLabels: Record<string, string> = {
+  idle: "מוכן",
+  running: "פועל",
+  paused: "מושהה",
+  manual: "ממתין לפעולה ידנית",
+  stopping: "עוצר",
+  error: "שגיאה",
+};
+
+function RunPage() {
+  const [settings, setSettings] = useState<SettingsData | null>(null);
+  const [profiles, setProfiles] = useState<WorkflowData["profiles"]>({});
+  const [profileId, setProfileId] = useState("");
+  const [dry, setDry] = useState(false);
+  const [live, setLive] = useState<LiveData | null>(null);
+  const [fullPreview, setFullPreview] = useState(false);
+  const [consoleText, setConsoleText] = useState<string | null>(null);
+  const [busy, setBusy] = useState("");
+
+  const loadBase = async () => {
+    const [s, w] = await Promise.all([
+      mavatApi<SettingsData>("/api/settings"),
+      mavatApi<WorkflowData>("/api/workflow"),
+    ]);
+    setSettings(s);
+    setProfiles(w.profiles);
+    setProfileId((current) => current || Object.keys(w.profiles)[0] || "");
+  };
+  const loadLive = async () => {
+    try {
+      setLive(await mavatApi<LiveData>("/api/chrome/live"));
+    } catch {
+      /* transient while services start */
+    }
+  };
+  useEffect(() => {
+    loadBase();
+    loadLive();
+    const liveTimer = setInterval(loadLive, 900);
+    const baseTimer = setInterval(loadBase, 5000);
+    return () => {
+      clearInterval(liveTimer);
+      clearInterval(baseTimer);
+    };
+  }, []);
+
+  const state = live?.run || settings?.run;
+  const running = ["running", "paused", "manual", "stopping"].includes(state?.state || "");
+  const progress = state?.total_rows ? Math.round((state.current_row / state.total_rows) * 100) : 0;
+  const preview = live?.chrome.preview;
+  const recentConsole = useMemo(
+    () => [...(live?.console || [])].reverse().slice(0, 8),
+    [live?.console],
+  );
+
+  const postAction = async (name: "start" | "stop" | "continue" | "pause" | "resume") => {
+    setBusy(name);
+    try {
+      const body =
+        name === "start" ? JSON.stringify({ profile_id: profileId, dry_run: dry }) : undefined;
+      const result = await mavatApi<{ message?: string }>(`/api/run/${name}`, {
+        method: "POST",
+        body,
+      });
+      toast.success(result.message || "הפעולה בוצעה");
+      await Promise.all([loadLive(), loadBase()]);
+    } catch (error) {
+      toast.error((error as Error).message);
+    } finally {
+      setBusy("");
+    }
+  };
+  const chromeAction = async (name: "open" | "focus") => {
+    try {
+      await mavatApi(`/api/chrome/${name}`, { method: "POST" });
+      toast.success(name === "open" ? "Chrome נפתח בדף מבא״ת" : "Chrome הועבר לחזית");
+      setTimeout(loadLive, 1200);
+    } catch (error) {
+      toast.error((error as Error).message);
+    }
+  };
+  const togglePreview = async () => {
+    try {
+      await mavatApi("/api/chrome/preview/toggle", {
+        method: "POST",
+        body: JSON.stringify({ enabled: !preview?.enabled }),
+      });
+      await loadLive();
+    } catch (error) {
+      toast.error((error as Error).message);
+    }
+  };
+  const selectTab = async (targetId: string) => {
+    try {
+      await mavatApi("/api/chrome/preview/select", {
+        method: "POST",
+        body: JSON.stringify({ target_id: targetId }),
+      });
+      await loadLive();
+    } catch (error) {
+      toast.error((error as Error).message);
+    }
+  };
+  const openConsole = async () => {
+    const data = await mavatApi<{ content: string }>("/api/console");
+    setConsoleText(data.content || "");
+  };
+  const copyDiagnostics = async () => {
+    const report = {
+      generated_at: new Date().toISOString(),
+      chrome: live?.chrome,
+      run: state,
+      console: live?.console?.slice(-40),
+    };
+    await copyMavatText(JSON.stringify(report, null, 2));
+    toast.success("דוח האבחון הועתק");
+  };
+
+  return (
+    <div className="mx-auto max-w-[1500px] space-y-7">
+      <AutomationContext />
+      <PageHeader
+        eyebrow="מרכז שליטה חי"
+        title="הפעלה ותצוגת אוטומציה"
+        description="צפה בדיוק במה ש-Chrome מבצע, שלוט בהרצה וקבל אבחון מלא בזמן אמת."
+        actions={
+          <>
+            <Button variant="outline" onClick={() => chromeAction("open")}>
+              <Chrome className="size-4" />
+              פתח Chrome
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => chromeAction("focus")}
+              disabled={!live?.chrome.connected}
+            >
+              <Focus className="size-4" />
+              העבר לחזית
+            </Button>
+          </>
+        }
+      />
+
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatusTile
+          icon={live?.chrome.connected ? Wifi : WifiOff}
+          label="חיבור Chrome"
+          value={live?.chrome.connected ? "מחובר" : "מנותק"}
+          good={live?.chrome.connected}
+          detail={`CDP · ${live?.chrome.port || 9222}`}
+        />
+        <StatusTile
+          icon={TestTube2}
+          label="מצב הרצה"
+          value={stateLabels[state?.state || "idle"] || state?.state || "מוכן"}
+          good={state?.state === "running"}
+          detail={state?.message || "אין הרצה פעילה"}
+        />
+        <StatusTile
+          icon={Monitor}
+          label="לשונית פעילה"
+          value={preview?.title || "לא נבחרה"}
+          good={preview?.available}
+          detail={
+            preview?.updated_at
+              ? `עודכן ${new Date(preview.updated_at).toLocaleTimeString("he-IL")}`
+              : "ממתין לתמונה"
+          }
+        />
+        <StatusTile
+          icon={Camera}
+          label="מסגרות שנקלטו"
+          value={String(preview?.frames || 0)}
+          good={Boolean(preview?.frames)}
+          detail={`פרופיל ${live?.chrome.profile_directory || "—"}`}
+        />
+      </section>
+
+      <section className="grid items-start gap-5 xl:grid-cols-[minmax(0,1.75fr)_420px]">
+        <LivePreview
+          live={live}
+          full={fullPreview}
+          onFull={() => setFullPreview((value) => !value)}
+          onToggle={togglePreview}
+          onSelect={selectTab}
+          onFocus={() => chromeAction("focus")}
+        />
+
+        <div className="space-y-5">
+          <Card>
+            <CardHeader>
+              <CardTitle className="font-display text-xl">בקרת ההרצה</CardTitle>
+              <CardDescription>מקור נתונים, חשבון ומצב ביצוע</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="rounded-md border p-3">
+                <div className="flex items-center gap-2">
+                  <FileSpreadsheet className="size-4 text-accent" />
+                  <strong className="truncate text-sm">
+                    {settings?.data_file_name || "לא נבחר קובץ נתונים"}
+                  </strong>
+                </div>
+              </div>
+              <label className="block space-y-2 text-sm font-medium">
+                פרופיל כניסה
+                <select
+                  className="h-10 w-full rounded-md border bg-background px-3"
+                  value={profileId}
+                  onChange={(event) => setProfileId(event.target.value)}
+                >
+                  {!Object.keys(profiles).length && <option value="">לא הוגדר פרופיל</option>}
+                  {Object.entries(profiles).map(([id, profile]) => (
+                    <option key={id} value={id}>
+                      {profile.name} · {profile.username} {profile.has_password ? "🔒" : "🔑"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div
+                className={`flex items-center justify-between rounded-md border p-3 ${dry ? "border-accent/40 bg-accent/5" : "border-emerald-500/40 bg-emerald-500/5"}`}
+              >
+                <div>
+                  <p className="text-sm font-medium">
+                    {dry ? "מצב בדיקה בלבד" : "הרצה אמיתית ב-Chrome"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {dry ? "ללא שליחת נתונים" : "הפעולות יבוצעו באתר בפועל"}
+                  </p>
+                </div>
+                <Switch checked={dry} onCheckedChange={setDry} disabled={running} />
+              </div>
+              {!running && (
+                <Button
+                  className="w-full"
+                  onClick={() => postAction("start")}
+                  disabled={busy === "start"}
+                >
+                  <Play className="size-4" />
+                  {dry ? "התחל בדיקה" : "התחל אוטומציה אמיתית"}
+                </Button>
+              )}
+              {running && (
+                <div className="grid grid-cols-2 gap-2">
+                  {state?.state === "running" && (
+                    <Button variant="outline" onClick={() => postAction("pause")}>
+                      <Pause className="size-4" />
+                      השהה
+                    </Button>
+                  )}
+                  {state?.state === "paused" && (
+                    <Button onClick={() => postAction("resume")}>
+                      <Play className="size-4" />
+                      המשך
+                    </Button>
+                  )}
+                  {state?.state === "manual" && (
+                    <Button onClick={() => postAction("continue")}>
+                      <Play className="size-4" />
+                      בוצע — המשך
+                    </Button>
+                  )}
+                  <Button variant="destructive" onClick={() => postAction("stop")}>
+                    <Square className="size-4" />
+                    עצור
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card
+            className={
+              state?.state === "manual"
+                ? "border-accent"
+                : state?.state === "error"
+                  ? "border-destructive"
+                  : ""
+            }
+          >
+            <CardHeader>
+              <div className="flex items-center justify-between gap-3">
+                <CardTitle className="font-display text-xl">השלב הנוכחי</CardTitle>
+                <Badge variant={state?.state === "error" ? "destructive" : "secondary"}>
+                  {stateLabels[state?.state || "idle"] || state?.state}
+                </Badge>
+              </div>
+              <CardDescription>{state?.message || "מוכן להפעלה"}</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Progress value={progress} />
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <MiniStat
+                  label="רשומה"
+                  value={`${state?.current_row || 0}/${state?.total_rows || 0}`}
+                />
+                <MiniStat label="שלב" value={String(state?.current_step || 0)} />
+                <MiniStat label="פעולה" value={state?.current_step_action || "—"} mono />
+              </div>
+              {state?.current_step_name && (
+                <div className="rounded-md border bg-muted/40 p-3">
+                  <strong>{state.current_step_name}</strong>
+                  {state.current_step_target && (
+                    <p className="mt-1 truncate text-xs text-muted-foreground">
+                      יעד: {state.current_step_target}
+                    </p>
+                  )}
+                </div>
+              )}
+              {state?.state === "manual" && (
+                <div className="rounded-md border border-accent bg-accent/10 p-3 text-sm">
+                  <strong>נדרשת פעולה ידנית</strong>
+                  <p className="mt-1 text-muted-foreground">{state.manual_message}</p>
+                </div>
+              )}
+              {state?.last_error?.error && <ErrorCard state={state} />}
+            </CardContent>
+          </Card>
+        </div>
+      </section>
+
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <CardTitle className="flex items-center gap-2 font-display text-xl">
+                <Terminal className="size-5 text-accent" />
+                קונסול חי
+              </CardTitle>
+              <CardDescription>הודעות Chrome האחרונות; מידע רגיש אינו נכתב ליומן.</CardDescription>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={loadLive}>
+                <RefreshCw className="size-4" />
+                רענן
+              </Button>
+              <Button variant="outline" size="sm" onClick={copyDiagnostics}>
+                <ClipboardCopy className="size-4" />
+                העתק אבחון
+              </Button>
+              <Button size="sm" onClick={openConsole}>
+                <Terminal className="size-4" />
+                קונסול מלא
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div
+            className="max-h-72 overflow-auto rounded-md bg-slate-950 p-4 font-mono text-xs text-slate-200"
+            dir="ltr"
+          >
+            {recentConsole.length ? (
+              recentConsole.map((event, index) => (
+                <div
+                  key={`${event.timestamp}-${index}`}
+                  className="border-b border-slate-800 py-2 last:border-0"
+                >
+                  <span
+                    className={
+                      event.level === "error" || event.level === "pageerror"
+                        ? "text-red-400"
+                        : event.level === "warning"
+                          ? "text-amber-300"
+                          : "text-sky-300"
+                    }
+                  >
+                    [{event.level}]
+                  </span>{" "}
+                  <span>{event.text}</span>
+                  <div className="truncate text-slate-500">{event.url}</div>
+                </div>
+              ))
+            ) : (
+              <p className="text-slate-500">טרם נקלטו הודעות Console.</p>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {consoleText !== null && (
+        <ConsoleModal content={consoleText} onClose={() => setConsoleText(null)} />
+      )}
+    </div>
+  );
+}
+
+function LivePreview({
+  live,
+  full,
+  onFull,
+  onToggle,
+  onSelect,
+  onFocus,
+}: {
+  live: LiveData | null;
+  full: boolean;
+  onFull: () => void;
+  onToggle: () => void;
+  onSelect: (id: string) => void;
+  onFocus: () => void;
+}) {
+  const preview = live?.chrome.preview;
+  return (
+    <Card
+      className={
+        full
+          ? "fixed inset-4 z-50 flex flex-col overflow-hidden border-slate-700 bg-slate-950 text-white shadow-2xl"
+          : "overflow-hidden"
+      }
+    >
+      <CardHeader className="border-b pb-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <CardTitle className="flex items-center gap-2 font-display text-xl">
+              <span
+                className={`size-2.5 rounded-full ${live?.chrome.connected ? "animate-pulse bg-emerald-500" : "bg-destructive"}`}
+              />
+              תצוגת Chrome חיה
+            </CardTitle>
+            <CardDescription className={full ? "text-slate-400" : ""}>
+              {preview?.title || "ממתין לחיבור לדפדפן"}
+            </CardDescription>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" onClick={onToggle}>
+              {preview?.enabled ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+              {preview?.enabled ? "הסתר וכבה צילום" : "הפעל תצוגה"}
+            </Button>
+            <Button variant="outline" size="sm" onClick={onFocus}>
+              <Focus className="size-4" />
+              Chrome
+            </Button>
+            <Button variant="outline" size="icon" onClick={onFull}>
+              {full ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+            </Button>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <select
+            className={`h-9 min-w-0 flex-1 rounded-md border px-3 text-sm ${full ? "border-slate-700 bg-slate-900" : "bg-background"}`}
+            value={preview?.target_id || ""}
+            onChange={(event) => onSelect(event.target.value)}
+          >
+            <option value="">בחירה אוטומטית של לשונית מבא״ת</option>
+            {(live?.chrome.pages || []).map((page) => (
+              <option key={page.id} value={page.id}>
+                {page.title || page.url}
+              </option>
+            ))}
+          </select>
+          {preview?.available && (
+            <Button variant="outline" size="sm" asChild>
+              <a href="/api/chrome/preview.jpg?download=1">
+                <Download className="size-4" />
+                שמור צילום
+              </a>
+            </Button>
+          )}
+        </div>
+        {preview?.url && (
+          <div
+            className={`mt-3 flex items-center gap-2 rounded-md px-3 py-2 font-mono text-xs ${full ? "bg-slate-900 text-slate-400" : "bg-muted text-muted-foreground"}`}
+            dir="ltr"
+          >
+            <span className="truncate">{preview.url}</span>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="ms-auto size-7"
+              onClick={() => copyMavatText(preview.url)}
+            >
+              <ClipboardCopy className="size-3.5" />
+            </Button>
+          </div>
+        )}
+      </CardHeader>
+      <CardContent
+        className={`relative grid place-items-center p-0 ${full ? "min-h-0 flex-1" : "aspect-video bg-slate-950"}`}
+      >
+        {preview?.enabled && preview.available ? (
+          <img
+            className="h-full w-full object-contain"
+            src={`/api/chrome/preview.jpg?v=${preview.frames}`}
+            alt="תצוגה חיה של Chrome"
+          />
+        ) : (
+          <div className="p-10 text-center text-slate-400">
+            {preview?.enabled ? (
+              <>
+                <Monitor className="mx-auto mb-4 size-12 opacity-40" />
+                <p>{preview.error || "מפעיל תצוגה חיה..."}</p>
+                <p className="mt-2 text-xs">פתח את Chrome או בחר לשונית מהרשימה.</p>
+              </>
+            ) : (
+              <>
+                <EyeOff className="mx-auto mb-4 size-12 opacity-40" />
+                <p>התצוגה והצילום כבויים לשמירת פרטיות</p>
+              </>
+            )}
+          </div>
+        )}
+        {preview?.enabled && preview.available && (
+          <div className="absolute bottom-3 right-3 flex items-center gap-2 rounded-full bg-black/70 px-3 py-1.5 text-xs text-white">
+            <span className="size-2 animate-pulse rounded-full bg-red-500" />
+            חי
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ErrorCard({ state }: { state: RunState }) {
+  const error = state.last_error!;
+  return (
+    <div className="rounded-md border border-destructive bg-destructive/5 p-3">
+      <div className="flex gap-2">
+        <AlertTriangle className="mt-0.5 size-5 shrink-0 text-destructive" />
+        <div className="min-w-0">
+          <strong>שלב {error.step} נכשל</strong>
+          <p className="mt-1 text-sm text-destructive">{error.error}</p>
+          <p className="mt-2 truncate font-mono text-xs text-muted-foreground" dir="ltr">
+            {error.url}
+          </p>
+        </div>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => copyMavatText(JSON.stringify(error, null, 2))}
+        >
+          <ClipboardCopy className="size-4" />
+          העתק כשל
+        </Button>
+        {error.screenshot && (
+          <Button variant="outline" size="sm" asChild>
+            <a href="/api/run/error-screenshot" target="_blank">
+              <Camera className="size-4" />
+              צילום הכשל
+            </a>
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+function StatusTile({
+  icon: Icon,
+  label,
+  value,
+  detail,
+  good,
+}: {
+  icon: typeof Monitor;
+  label: string;
+  value: string;
+  detail: string;
+  good?: boolean;
+}) {
+  return (
+    <Card>
+      <CardContent className="flex items-start gap-3 p-4">
+        <div
+          className={`rounded-md p-2 ${good ? "bg-emerald-500/10 text-emerald-600" : "bg-muted text-muted-foreground"}`}
+        >
+          <Icon className="size-5" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-xs text-muted-foreground">{label}</p>
+          <strong className="block truncate">{value}</strong>
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">{detail}</p>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+function MiniStat({
+  label,
+  value,
+  mono = false,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
+  return (
+    <div className="rounded-md bg-muted/60 p-2">
+      <p className="text-[11px] text-muted-foreground">{label}</p>
+      <strong className={`block truncate text-sm ${mono ? "font-mono" : ""}`}>{value}</strong>
+    </div>
+  );
+}
+function ConsoleModal({ content, onClose }: { content: string; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-[60] grid place-items-center bg-slate-950/70 p-5 backdrop-blur-sm">
+      <section className="flex h-[min(800px,calc(100vh-40px))] w-[min(1200px,calc(100vw-40px))] flex-col rounded-xl border border-slate-700 bg-slate-950 p-5 text-slate-100 shadow-2xl">
+        <header className="mb-4 flex items-center justify-between border-b border-slate-700 pb-4">
+          <div>
+            <p className="text-xs tracking-[.2em] text-slate-400">PYTHON · CHROME CDP · REACT</p>
+            <h2 className="font-display text-2xl">קונסול ואבחון מלא</h2>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => copyMavatText(content)}>
+              <ClipboardCopy className="size-4" />
+              העתק הכל
+            </Button>
+            <Button variant="secondary" size="icon" onClick={onClose}>
+              <X className="size-4" />
+            </Button>
+          </div>
+        </header>
+        <pre
+          className="flex-1 overflow-auto rounded-md border border-slate-800 bg-black/40 p-4 text-left font-mono text-sm leading-6 text-sky-100"
+          dir="ltr"
+        >
+          {content || "הקונסול ריק."}
+        </pre>
+      </section>
+    </div>
+  );
 }

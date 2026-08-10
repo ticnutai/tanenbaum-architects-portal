@@ -66,13 +66,26 @@ class WorkflowRunner:
         self.dry_run = dry_run
         self.stop_event = threading.Event()
         self.continue_event = threading.Event()
+        self.pause_event = threading.Event()
 
     def stop(self) -> None:
         self.stop_event.set()
+        self.pause_event.clear()
+        self.continue_event.set()
+
+    def pause(self) -> None:
+        self.pause_event.set()
+
+    def resume(self) -> None:
+        self.pause_event.clear()
         self.continue_event.set()
 
     def continue_after_manual(self) -> None:
         self.continue_event.set()
+
+    def _wait_if_paused(self) -> None:
+        while self.pause_event.is_set() and not self.stop_event.is_set():
+            time.sleep(0.15)
 
     def _resolved(self, value: Any, row: dict[str, Any]) -> str:
         context = SafeFormat({**row, "username": self.username})
@@ -106,6 +119,10 @@ class WorkflowRunner:
             for step in self.workflow["steps"]:
                 if not step.get("enabled", True):
                     continue
+                self._wait_if_paused()
+                if self.stop_event.is_set():
+                    self.callbacks.finished("נעצר")
+                    return
                 if step.get("scope", "per_record") == "once" and index > 1:
                     continue
                 self.callbacks.log(f"שורה {index}: {self._describe(step, row)}")
@@ -164,6 +181,9 @@ class WorkflowRunner:
                             break
                         self.callbacks.status(index, "בביצוע", "")
                         for step_number, step in enumerate(self.workflow["steps"], start=1):
+                            if self.stop_event.is_set():
+                                break
+                            self._wait_if_paused()
                             if self.stop_event.is_set():
                                 break
                             if not step.get("enabled", True):
