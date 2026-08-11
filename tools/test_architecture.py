@@ -52,6 +52,10 @@ def main() -> None:
     assert "raw-cdp-websocket" in read("src/routes/recorder.tsx")
     engine_test = read("tools/test_automation_engine.cjs")
     assert 'MAVAT_CHROME_CDP_PORT: "19223"' in engine_test
+    sidebar = read("src/routes/__root.tsx") + read("src/components/app-sidebar.tsx")
+    assert "mavat.sidebar.autoHide" in sidebar
+    assert "הצמד את סרגל הצד" in sidebar
+    assert "overlay={autoHide}" in sidebar
 
     print("Architecture regression checks: OK")
 

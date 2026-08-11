@@ -9,6 +9,8 @@ import {
   Bot,
   Radio,
   ListOrdered,
+  Pin,
+  PinOff,
 } from "lucide-react";
 
 import {
@@ -48,11 +50,30 @@ const groups = [
   },
 ];
 
-export function AppSidebar() {
+type AppSidebarProps = {
+  autoHide: boolean;
+  onAutoHideChange: (autoHide: boolean) => void;
+  onPointerEnter?: () => void;
+  onPointerLeave?: () => void;
+};
+
+export function AppSidebar({
+  autoHide,
+  onAutoHideChange,
+  onPointerEnter,
+  onPointerLeave,
+}: AppSidebarProps) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
 
   return (
-    <Sidebar side="right" collapsible="icon">
+    <Sidebar
+      side="right"
+      collapsible={autoHide ? "offcanvas" : "icon"}
+      overlay={autoHide}
+      onMouseEnter={onPointerEnter}
+      onMouseLeave={onPointerLeave}
+      className={autoHide ? "z-40 shadow-2xl" : undefined}
+    >
       <SidebarHeader className="border-b border-sidebar-border px-3 py-4">
         <div className="flex items-center gap-3">
           <span className="flex size-9 shrink-0 items-center justify-center rounded-sm bg-sidebar-primary text-sidebar-primary-foreground">
@@ -62,6 +83,15 @@ export function AppSidebar() {
             <p className="truncate font-display text-sm font-bold">טננבאום אדריכלות</p>
             <p className="truncate text-xs text-sidebar-foreground/60">מערכת ניהול משרדית</p>
           </div>
+          <button
+            type="button"
+            onClick={() => onAutoHideChange(!autoHide)}
+            className="ms-auto hidden size-8 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring md:flex group-data-[collapsible=icon]:hidden"
+            aria-label={autoHide ? "הצמדת סרגל הצד" : "הפעלת הסתרה אוטומטית"}
+            title={autoHide ? "הצמד את סרגל הצד" : "הפעל הסתרה אוטומטית"}
+          >
+            {autoHide ? <Pin className="size-4" /> : <PinOff className="size-4" />}
+          </button>
         </div>
       </SidebarHeader>
 

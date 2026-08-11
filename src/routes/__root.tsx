@@ -142,6 +142,31 @@ function RootComponent() {
   const { queryClient } = Route.useRouteContext();
   const router = useRouter();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const [sidebarAutoHide, setSidebarAutoHide] = useState(false);
+  const [sidebarHovered, setSidebarHovered] = useState(false);
+  const [sidebarManualOpen, setSidebarManualOpen] = useState(false);
+  const [sidebarPinnedOpen, setSidebarPinnedOpen] = useState(true);
+
+  useEffect(() => {
+    setSidebarAutoHide(window.localStorage.getItem("mavat.sidebar.autoHide") === "true");
+  }, []);
+
+  const changeSidebarAutoHide = (autoHide: boolean) => {
+    setSidebarAutoHide(autoHide);
+    window.localStorage.setItem("mavat.sidebar.autoHide", String(autoHide));
+    if (autoHide) {
+      setSidebarManualOpen(false);
+      setSidebarHovered(true);
+    } else {
+      setSidebarPinnedOpen(true);
+      setSidebarHovered(false);
+      setSidebarManualOpen(false);
+    }
+  };
+
+  const sidebarOpen = sidebarAutoHide
+    ? sidebarHovered || sidebarManualOpen
+    : sidebarPinnedOpen;
   const goBack = () => {
     if (router.history.canGoBack()) {
       router.history.back();
@@ -152,9 +177,39 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <SidebarProvider>
+      <SidebarProvider
+        open={sidebarOpen}
+        onOpenChange={(open) => {
+          if (sidebarAutoHide) setSidebarManualOpen(open);
+          else setSidebarPinnedOpen(open);
+        }}
+      >
         <div className="flex min-h-screen w-full bg-background">
-          <AppSidebar />
+          <AppSidebar
+            autoHide={sidebarAutoHide}
+            onAutoHideChange={changeSidebarAutoHide}
+            onPointerEnter={() => {
+              if (sidebarAutoHide) setSidebarHovered(true);
+            }}
+            onPointerLeave={() => {
+              if (sidebarAutoHide) {
+                setSidebarHovered(false);
+                setSidebarManualOpen(false);
+              }
+            }}
+          />
+          {sidebarAutoHide && !sidebarOpen && (
+            <button
+              type="button"
+              className="fixed inset-y-20 right-0 z-40 hidden w-3 items-center justify-center rounded-s-md border border-e-0 border-sidebar-border bg-sidebar text-sidebar-primary shadow-lg transition-[width] hover:w-4 md:flex"
+              onMouseEnter={() => setSidebarHovered(true)}
+              onFocus={() => setSidebarManualOpen(true)}
+              aria-label="פתיחת סרגל הצד"
+              title="העבר את העכבר לפתיחת סרגל הצד"
+            >
+              <span className="h-16 w-1 rounded-full bg-sidebar-primary" />
+            </button>
+          )}
           <div className="flex min-w-0 flex-1 flex-col">
             <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-border bg-card/80 px-4 backdrop-blur">
               <SidebarTrigger />
