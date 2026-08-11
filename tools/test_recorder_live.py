@@ -14,7 +14,7 @@ started = threading.Event()
 finished = threading.Event()
 
 recorder = BrowserRecorder(
-    9222,
+    9223,
     on_log=logs.append,
     on_step=steps.append,
     on_started=lambda _text: started.set(),
@@ -27,7 +27,7 @@ if not started.wait(8):
 
 with sync_playwright() as playwright:
     browser = playwright.chromium.connect_over_cdp(
-        "http://127.0.0.1:9222", timeout=5000
+        "http://127.0.0.1:9223", timeout=5000
     )
     page = next(
         page

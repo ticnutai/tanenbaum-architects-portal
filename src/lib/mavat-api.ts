@@ -22,6 +22,7 @@ export type WorkflowStep = {
   position?: { x_ratio: number; y_ratio: number };
   confidence?: number;
   recorded_at?: string;
+  screenshot?: string;
 };
 export type WorkflowData = {
   workflow: { name: string; steps: WorkflowStep[] };
@@ -37,6 +38,18 @@ export type AutomationSummary = {
   active: boolean;
 };
 export type AutomationsData = { automations: AutomationSummary[]; active_id: string };
+export type AutomationInputField = {
+  key: string;
+  label: string;
+  type: "text" | "number" | "decimal" | "select" | "autocomplete" | "date";
+  required: boolean;
+  options?: string[];
+};
+export type AutomationDetail = {
+  automation: AutomationSummary;
+  workflow: { name: string; steps: WorkflowStep[] };
+  input_schema: AutomationInputField[];
+};
 export type RunState = {
   state: string;
   message: string;

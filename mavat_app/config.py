@@ -54,7 +54,7 @@ class ConfigStore:
             "browser_profile_dir": str(self.base_dir / "chrome_profile"),
             "chrome_profile_directory": "Default",
             "chrome_account_email": "",
-            "chrome_debug_port": 9222,
+            "chrome_debug_port": 9223,
         }
         if not self.config_path.exists():
             return defaults

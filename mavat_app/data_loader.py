@@ -23,6 +23,13 @@ HEADER_ALIASES = {
     "מספר תוכנית": "plan_number",
     "שם תכנית": "plan_name",
     "שם תוכנית": "plan_name",
+    "ועדה": "committee",
+    "ועדה מקומית": "committee",
+    "מרחב תכנון": "planning_area",
+    "סוג תכנית": "plan_type",
+    "סוג תוכנית": "plan_type",
+    "שטח": "area",
+    "שטח בדונם": "area",
 }
 
 
@@ -116,4 +123,3 @@ def load_records(file_path: str | Path) -> list[dict[str, Any]]:
     if extension == ".docx":
         return load_docx(path)
     raise ValueError("סוג קובץ לא נתמך. יש לבחור XLSX, CSV, TSV או DOCX")
-

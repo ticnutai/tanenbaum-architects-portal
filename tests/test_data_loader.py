@@ -27,6 +27,16 @@ class DataLoaderTests(unittest.TestCase):
         self.assertEqual(records[0]["client_name"], "לקוח א")
         self.assertEqual(records[0]["block"], "12")
 
+    def test_planning_dropdown_headers_are_normalized(self) -> None:
+        records = _rows_to_records([
+            ["ועדה", "סוג תוכנית", "מרחב תכנון", "שטח בדונם"],
+            ["שדות דן", "תוכנית מתאר מקומית", "אור יהודה", 12.5],
+        ])
+        self.assertEqual(records[0]["committee"], "שדות דן")
+        self.assertEqual(records[0]["plan_type"], "תוכנית מתאר מקומית")
+        self.assertEqual(records[0]["planning_area"], "אור יהודה")
+        self.assertEqual(records[0]["area"], 12.5)
+
 
 if __name__ == "__main__":
     unittest.main()

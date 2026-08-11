@@ -2,16 +2,13 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import sys
-import time
-import urllib.request
+import threading
 from typing import Any
 
+import websocket
 
-def targets(port: int) -> list[dict[str, Any]]:
-    with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=2) as response:
-        return [item for item in json.load(response) if item.get("type") == "page"]
+from mavat_app.cdp import CdpConnection, CdpEvent, page_targets, select_page_target
 
 
 def emit(frame: bytes = b"", **metadata: Any) -> None:
@@ -27,50 +24,100 @@ def main() -> None:
     port = int(sys.argv[1])
     requested_target = sys.argv[2] if len(sys.argv) > 2 else ""
     once = "--once" in sys.argv
-    from playwright.sync_api import sync_playwright
+    target = select_page_target(port, requested_target)
+    if not target:
+        emit(error="לא נמצאה לשונית אינטרנט פתוחה")
+        return
+    target_id = str(target.get("id") or requested_target)
+    url = str(target.get("url") or "")
+    title = str(target.get("title") or "")
+    launch_url = url
+    connection: CdpConnection | None = None
 
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{port}", timeout=5000)
-        pages = [page for context in browser.contexts for page in context.pages if page.url.startswith("http")]
-        catalog = targets(port)
-        requested = next((item for item in catalog if str(item.get("id")) == requested_target), None)
-        page = next((item for item in pages if requested and item.url == requested.get("url")), None)
-        if page is None:
-            relevant = [item for item in pages if any(host in item.url for host in ("mavat", "gov.il", "iplan"))]
-            page = relevant[-1] if relevant else (pages[-1] if pages else None)
-        if page is None:
-            emit(error="לא נמצאה לשונית אינטרנט פתוחה")
+    screencast_options = {
+        "format": "jpeg",
+        "quality": 65,
+        "maxWidth": 1440,
+        "maxHeight": 900,
+        "everyNthFrame": 1,
+    }
+
+    def on_event(event: CdpEvent) -> None:
+        if event.method != "Page.screencastFrame" or not connection:
             return
-        selected_target = next((item for item in catalog if item.get("url") == page.url), {})
-        target_id = str(selected_target.get("id") or requested_target)
-        session = page.context.new_cdp_session(page)
+        try:
+            frame = base64.b64decode(str(event.params["data"]))
+            emit(frame, target_id=target_id, url=url, title=title, error="")
+            connection.send(
+                "Page.screencastFrameAck", {"sessionId": event.params["sessionId"]}
+            )
+        except Exception as exc:
+            emit(error=str(exc)[:500], target_id=target_id, url=url)
+
+    try:
+        connection = CdpConnection(str(target["webSocketDebuggerUrl"]), on_event=on_event)
+        connection.request("Page.enable")
         if once:
-            try:
-                capture = session.send("Page.captureScreenshot", {
-                    "format": "jpeg", "quality": 68,
-                    "fromSurface": True, "captureBeyondViewport": False,
-                })
-                frame = base64.b64decode(capture["data"])
-                emit(frame, target_id=target_id, url=page.url, title=page.title(), error="")
-                os._exit(0)
-            except Exception as exc:
-                emit(error=str(exc)[:500], target_id=target_id, url=page.url)
-                return
+            capture = connection.request(
+                "Page.captureScreenshot",
+                {
+                    "format": "jpeg",
+                    "quality": 68,
+                    "fromSurface": True,
+                    "captureBeyondViewport": False,
+                },
+            )
+            emit(
+                base64.b64decode(str(capture["data"])),
+                target_id=target_id,
+                url=url,
+                title=title,
+                error="",
+            )
+            return
+        capture = connection.request(
+            "Page.captureScreenshot",
+            {
+                "format": "jpeg",
+                "quality": 65,
+                "fromSurface": True,
+                "captureBeyondViewport": False,
+            },
+        )
+        emit(
+            base64.b64decode(str(capture["data"])),
+            target_id=target_id,
+            url=url,
+            title=title,
+            error="",
+        )
+        connection.request("Page.startScreencast", screencast_options)
 
-        def on_frame(event: dict[str, Any]) -> None:
-            try:
-                frame = base64.b64decode(event["data"])
-                emit(frame, target_id=target_id, url=page.url, title=page.title(), error="")
-                session.send("Page.screencastFrameAck", {"sessionId": event["sessionId"]})
-            except Exception as exc:
-                emit(error=str(exc)[:500], target_id=target_id, url=page.url)
+        def close_after_navigation() -> None:
+            while connection and not connection.closed:
+                try:
+                    current = next(
+                        (item for item in page_targets(port) if str(item.get("id")) == target_id),
+                        None,
+                    )
+                    if not current or str(current.get("url") or "") != launch_url:
+                        connection.close()
+                        return
+                except Exception:
+                    pass
+                threading.Event().wait(0.5)
 
-        session.on("Page.screencastFrame", on_frame)
-        session.send("Page.startScreencast", {
-            "format": "jpeg", "quality": 65, "maxWidth": 1440, "maxHeight": 900, "everyNthFrame": 1,
-        })
-        while browser.is_connected():
-            page.wait_for_timeout(1000)
+        threading.Thread(target=close_after_navigation, daemon=True).start()
+        while True:
+            try:
+                connection.pump_once()
+            except websocket.WebSocketTimeoutException:
+                continue
+    except Exception as exc:
+        emit(error=str(exc)[:500], target_id=target_id, url=url)
+    finally:
+        if connection:
+            connection.close()
 
 
 if __name__ == "__main__":

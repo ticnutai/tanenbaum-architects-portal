@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import os
+import queue
 import re
 import shutil
 import sqlite3
@@ -15,6 +16,7 @@ import uuid
 import webbrowser
 import urllib.error
 import urllib.request
+import websocket
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -22,10 +24,12 @@ from typing import Any
 os.environ.setdefault("PYTHONUTF8", "1")
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
-from flask import Flask, Response, jsonify, redirect, render_template, request, send_file, url_for
+from flask import Flask, Response, jsonify, redirect, request, send_file
+from flask_sock import Sock
 from werkzeug.utils import secure_filename
 
 from mavat_app.config import ConfigStore
+from mavat_app.cdp import CdpConnection, CdpEvent, page_targets
 from mavat_app.data_loader import load_records
 from mavat_app.recorder import BrowserRecorder
 from mavat_app.workflow import RunCallbacks, WorkflowRunner, load_workflow, save_workflow
@@ -38,6 +42,7 @@ MAVAT_URL = "https://www.gov.il/he/service/mvat"
 WEB_PORT = 18473
 
 app = Flask(__name__, template_folder="web/templates", static_folder="web/static")
+sock = Sock(app)
 
 
 class Runtime:
@@ -82,6 +87,9 @@ class Runtime:
         self.chrome_preview_frames = 0
         self.chrome_interaction_lock = threading.Lock()
         self.recorder_suppressed_until = 0.0
+        self.last_recorded_fingerprint = ""
+        self.last_recorded_at = 0.0
+        self.event_listeners: list[queue.Queue[dict[str, Any]]] = []
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         self.automation_dir = self.store.base_dir / "automations"
         self.automation_dir.mkdir(parents=True, exist_ok=True)
@@ -145,7 +153,7 @@ class Runtime:
         }
 
     def chrome_cdp_status(self) -> dict[str, Any]:
-        port = int(self.store.data.get("chrome_debug_port", 9222))
+        port = int(self.store.data.get("chrome_debug_port", 9223))
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1) as response:
                 version = json.load(response)
@@ -181,6 +189,27 @@ class Runtime:
             "frames": self.chrome_preview_frames,
         }
 
+    def stop_chrome_preview_process(self) -> None:
+        """Stop the raw-CDP preview worker process tree as one unit."""
+        process = self.chrome_preview_process
+        self.chrome_preview_process = None
+        if not process or process.poll() is not None:
+            return
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                check=False,
+            )
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
     def ensure_chrome_preview(self) -> None:
         if self.chrome_preview_thread and self.chrome_preview_thread.is_alive():
             return
@@ -196,7 +225,7 @@ class Runtime:
                     selected_target = self.chrome_preview_target_id
                     process = subprocess.Popen(
                         [sys.executable, "-m", "mavat_app.preview_worker",
-                         str(int(self.store.data.get("chrome_debug_port", 9222))), selected_target],
+                         str(int(self.store.data.get("chrome_debug_port", 9223))), selected_target],
                         cwd=str(ROOT_DIR), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                         env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
                         creationflags=creation_flags,
@@ -224,9 +253,7 @@ class Runtime:
                 except Exception as exc:
                     self.chrome_preview_error = f"Chrome CDP מנותק: {exc}"
                 finally:
-                    if self.chrome_preview_process and self.chrome_preview_process.poll() is None:
-                        self.chrome_preview_process.terminate()
-                    self.chrome_preview_process = None
+                    self.stop_chrome_preview_process()
                 time.sleep(1.0)
 
         self.chrome_preview_thread = threading.Thread(target=monitor, daemon=True)
@@ -237,36 +264,80 @@ class Runtime:
             return
 
         def monitor() -> None:
-            try:
-                from playwright.sync_api import sync_playwright
-                with sync_playwright() as playwright:
-                    browser = playwright.chromium.connect_over_cdp(
-                        f"http://127.0.0.1:{int(self.store.data.get('chrome_debug_port', 9222))}", timeout=5000
-                    )
-                    attached: set[int] = set()
+            port = int(self.store.data.get("chrome_debug_port", 9223))
+            workers: dict[str, threading.Thread] = {}
 
-                    def append_event(level: str, text: str, page_url: str) -> None:
-                        event = {
-                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "level": level,
-                            "text": str(text).replace("\x00", "")[:3000],
-                            "url": str(page_url)[:1000],
-                        }
-                        with self.lock:
-                            self.chrome_console_events.append(event)
-                            del self.chrome_console_events[:-500]
+            def append_event(level: str, text: str, page_url: str) -> None:
+                event = {
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "level": level,
+                    "text": str(text).replace("\x00", "")[:3000],
+                    "url": str(page_url)[:1000],
+                }
+                with self.lock:
+                    self.chrome_console_events.append(event)
+                    del self.chrome_console_events[:-500]
+                self.publish_event("chrome-console", **event)
 
-                    while browser.is_connected():
-                        for context in browser.contexts:
-                            for page in context.pages:
-                                if id(page) in attached:
-                                    continue
-                                page.on("console", lambda message, current=page: append_event(message.type, message.text, current.url))
-                                page.on("pageerror", lambda error, current=page: append_event("pageerror", str(error), current.url))
-                                attached.add(id(page))
-                        time.sleep(0.5)
-            except Exception as exc:
-                self.log(f"ניטור Console של Chrome נותק: {exc}")
+            def watch(target: dict[str, Any]) -> None:
+                connection: CdpConnection | None = None
+                url = str(target.get("url") or "")
+
+                def handle(event: CdpEvent) -> None:
+                    if event.method == "Runtime.consoleAPICalled":
+                        args = event.params.get("args") or []
+                        text = " ".join(
+                            str(arg.get("value") if "value" in arg else arg.get("description") or "")
+                            for arg in args
+                        )
+                        append_event(str(event.params.get("type") or "log"), text, url)
+                    elif event.method == "Runtime.exceptionThrown":
+                        details = event.params.get("exceptionDetails") or {}
+                        append_event(
+                            "pageerror",
+                            str((details.get("exception") or {}).get("description") or details.get("text") or "שגיאת JavaScript"),
+                            url,
+                        )
+                    elif event.method == "Log.entryAdded":
+                        entry = event.params.get("entry") or {}
+                        append_event(str(entry.get("level") or "log"), str(entry.get("text") or ""), str(entry.get("url") or url))
+
+                try:
+                    connection = CdpConnection(str(target["webSocketDebuggerUrl"]), on_event=handle)
+                    connection.request("Runtime.enable")
+                    connection.request("Log.enable")
+                    while True:
+                        try:
+                            connection.pump_once()
+                        except websocket.WebSocketTimeoutException:
+                            continue
+                except Exception as exc:
+                    self.log(f"ניטור Raw CDP Console נותק: {exc}")
+                finally:
+                    if connection:
+                        connection.close()
+
+            while True:
+                try:
+                    targets = [
+                        target
+                        for target in page_targets(port)
+                        if str(target.get("url") or "").startswith("http")
+                    ]
+                    active_ids = {str(target.get("id") or "") for target in targets}
+                    for target_id, thread in list(workers.items()):
+                        if target_id not in active_ids or not thread.is_alive():
+                            workers.pop(target_id, None)
+                    for target in targets:
+                        target_id = str(target.get("id") or "")
+                        if not target_id or target_id in workers:
+                            continue
+                        thread = threading.Thread(target=watch, args=(target,), daemon=True)
+                        workers[target_id] = thread
+                        thread.start()
+                except Exception:
+                    pass
+                time.sleep(0.75)
 
         self.chrome_console_monitor_thread = threading.Thread(target=monitor, daemon=True)
         self.chrome_console_monitor_thread.start()
@@ -278,7 +349,7 @@ class Runtime:
             creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
             result = subprocess.run(
                 [sys.executable, "-m", "mavat_app.interactive_browser",
-                 str(int(self.store.data.get("chrome_debug_port", 9222))), self.chrome_preview_target_id],
+                 str(int(self.store.data.get("chrome_debug_port", 9223))), self.chrome_preview_target_id],
                 cwd=str(ROOT_DIR), input=json.dumps(command, ensure_ascii=False) + "\n",
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace", timeout=18,
@@ -327,31 +398,87 @@ class Runtime:
         with self.lock, path.open("a", encoding="utf-8") as handle:
             handle.write(f"[{stamp}] {message}\n")
 
+    def publish_event(self, event_type: str, **payload: Any) -> None:
+        event = {
+            "type": event_type,
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            **payload,
+        }
+        with self.lock:
+            listeners = list(self.event_listeners)
+        for listener in listeners:
+            try:
+                listener.put_nowait(event)
+            except queue.Full:
+                try:
+                    listener.get_nowait()
+                    listener.put_nowait(event)
+                except (queue.Empty, queue.Full):
+                    pass
+
     def recorded_step(self, step: dict[str, Any]) -> None:
-        if time.time() < self.recorder_suppressed_until:
-            self.log("הפעולה נקלטה במצב לימוד וממתינה לאישור לפני שמירה")
-            return
-        workflow = self.read_workflow()
-        workflow.setdefault("steps", []).append(step)
-        self.write_workflow(workflow)
-        self.log(f"נקלט שלב: {step.get('name', step.get('type', ''))}")
+        now = time.time()
+        step.setdefault("recorded_at", datetime.now().isoformat(timespec="seconds"))
+        fingerprint = json.dumps(
+            {
+                "type": step.get("type"),
+                "target": step.get("target"),
+                "page_url": step.get("page_url"),
+                "locator": step.get("locator"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        with self.lock:
+            if now < self.recorder_suppressed_until:
+                self.log("הפעולה נקלטה במצב לימוד וממתינה לאישור לפני שמירה")
+                return
+            if (
+                fingerprint == self.last_recorded_fingerprint
+                and now - self.last_recorded_at < 3.0
+            ):
+                self.log(
+                    f"התעלמות מקליטה כפולה: {step.get('name', step.get('type', ''))}"
+                )
+                return
+            self.last_recorded_fingerprint = fingerprint
+            self.last_recorded_at = now
+            if step.get("type") != "fill_secret" and self.chrome_preview_frame:
+                folder = self.store.base_dir / "screenshots" / "recording"
+                folder.mkdir(parents=True, exist_ok=True)
+                screenshot = folder / f"step_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
+                screenshot.write_bytes(self.chrome_preview_frame)
+                step["screenshot"] = str(screenshot.resolve())
+            workflow = self.read_workflow()
+            workflow.setdefault("steps", []).append(step)
+            self.write_workflow(workflow)
+            self.log(f"נקלט שלב: {step.get('name', step.get('type', ''))}")
+            self.publish_event(
+                "step-recorded",
+                name=str(step.get("name") or step.get("type") or ""),
+                transport="raw-cdp-websocket",
+            )
 
     def start_recording(self) -> tuple[bool, str]:
         if self.recorder_thread and self.recorder_thread.is_alive():
             return True, "ההקלטה כבר פעילה"
         self.recording_state = "connecting"
         self.recording_message = "מתחבר ל-Chrome..."
-        port = int(self.store.data.get("chrome_debug_port", 9222))
+        port = int(self.store.data.get("chrome_debug_port", 9223))
 
         def started(message: str) -> None:
             self.recording_state = "recording"
             self.recording_message = message
             self.log("הקלטת פעולות התחילה")
+            self.publish_event("recording-status", state="recording", message=message)
 
         def finished(message: str) -> None:
             self.recording_state = "error" if message.startswith("ההקלטה נכשלה") else "idle"
             self.recording_message = message
             self.log(message)
+            self.publish_event(
+                "recording-status", state=self.recording_state, message=message
+            )
             self.recorder = None
 
         self.recorder = BrowserRecorder(
@@ -471,7 +598,7 @@ class Runtime:
             username=profile.username, password=secrets.get(profile.id, ""),
             default_profile_id=profile.id, secrets_by_profile=secrets,
             browser_profile_dir=str(self.store.data["browser_profile_dir"]),
-            chrome_debug_port=int(self.store.data.get("chrome_debug_port", 9222)),
+            chrome_debug_port=int(self.store.data.get("chrome_debug_port", 9223)),
             callbacks=RunCallbacks(log=self.log, status=status, manual=manual, finished=finished, step=step_status, error=run_error),
             dry_run=dry_run,
             chrome_profile_directory=str(self.store.data.get("chrome_profile_directory") or "Default"),
@@ -712,17 +839,17 @@ def parse_logs() -> list[dict[str, Any]]:
 
 @app.get("/")
 def index() -> Response:
-    return redirect(url_for("workflow_page"))
+    return redirect("http://127.0.0.1:18474/")
 
 
 @app.get("/workflow")
-def workflow_page() -> str:
-    return render_template("workflow.html", active="workflow")
+def workflow_page() -> Response:
+    return redirect("http://127.0.0.1:18474/workflow")
 
 
 @app.get("/runs")
-def runs_page() -> str:
-    return render_template("runs.html", active="runs")
+def runs_page() -> Response:
+    return redirect("http://127.0.0.1:18474/logs")
 
 
 @app.get("/api/automations")
@@ -735,6 +862,63 @@ def api_automations() -> Response:
         item["active"] = str(item.get("id")) == runtime.active_automation_id()
         items.append(item)
     return jsonify({"automations": items, "active_id": runtime.active_automation_id()})
+
+
+DEFAULT_AUTOMATION_INPUTS = [
+    {"key": "client_name", "label": "שם לקוח", "type": "text", "required": False},
+    {"key": "plan_name", "label": "שם התוכנית", "type": "text", "required": True},
+    {"key": "committee", "label": "ועדה", "type": "autocomplete", "required": True, "options": ["שדות דן"]},
+    {"key": "plan_type", "label": "סוג תוכנית", "type": "autocomplete", "required": True, "options": ["תוכנית מתאר מקומית"]},
+    {"key": "planning_area", "label": "מרחב תכנון", "type": "autocomplete", "required": False},
+    {"key": "locality", "label": "יישוב", "type": "autocomplete", "required": False},
+    {"key": "block", "label": "גוש", "type": "number", "required": True},
+    {"key": "parcel", "label": "חלקה", "type": "number", "required": True},
+    {"key": "lot", "label": "מגרש", "type": "text", "required": False},
+    {"key": "area", "label": "שטח בדונם", "type": "decimal", "required": True},
+]
+
+
+@app.get("/api/automations/<automation_id>")
+def api_automation_detail(automation_id: str) -> Response:
+    automation = next((item for item in runtime.automations() if str(item.get("id")) == automation_id), None)
+    if not automation:
+        return jsonify({"ok": False, "error": "האוטומציה לא נמצאה"}), 404
+    workflow = load_workflow(runtime.workflow_path(automation_id))
+    return jsonify({
+        "automation": automation,
+        "workflow": workflow,
+        "input_schema": automation.get("input_schema") or DEFAULT_AUTOMATION_INPUTS,
+    })
+
+
+@app.put("/api/automations/<automation_id>/input-schema")
+def api_update_automation_input_schema(automation_id: str) -> Response:
+    payload = request.get_json(force=True) or {}
+    fields = payload.get("fields") or []
+    if not isinstance(fields, list) or not fields:
+        return jsonify({"ok": False, "error": "יש להגדיר לפחות שדה קלט אחד"}), 400
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in fields:
+        key = re.sub(r"[^a-zA-Z0-9_]", "", str(raw.get("key") or "").strip())
+        label = str(raw.get("label") or "").strip()
+        field_type = str(raw.get("type") or "text")
+        if not key or not label or key in seen:
+            return jsonify({"ok": False, "error": "מפתח ושם שדה חייבים להיות ייחודיים ותקינים"}), 400
+        if field_type not in {"text", "number", "decimal", "select", "autocomplete", "date"}:
+            return jsonify({"ok": False, "error": f"סוג שדה לא נתמך: {field_type}"}), 400
+        seen.add(key)
+        normalized.append({
+            "key": key, "label": label, "type": field_type,
+            "required": bool(raw.get("required", False)),
+            "options": [str(value) for value in (raw.get("options") or [])],
+        })
+    automation = next((item for item in runtime.automations() if str(item.get("id")) == automation_id), None)
+    if not automation:
+        return jsonify({"ok": False, "error": "האוטומציה לא נמצאה"}), 404
+    automation["input_schema"] = normalized
+    runtime.store.save()
+    return jsonify({"ok": True, "input_schema": normalized})
 
 
 @app.post("/api/automations")
@@ -753,6 +937,10 @@ def api_create_automation() -> Response:
         "description": description,
         "status": "draft",
         "created_at": datetime.now().isoformat(timespec="seconds"),
+        "input_schema": json.loads(json.dumps(
+            source.get("input_schema") if source and source.get("input_schema") else DEFAULT_AUTOMATION_INPUTS,
+            ensure_ascii=False,
+        )),
     }
     if source:
         automation["data_file"] = str(source.get("data_file") or "")
@@ -807,6 +995,7 @@ def api_create_automation_from_steps() -> Response:
         "id": automation_id, "name": name,
         "description": str(payload.get("description") or "אוטומציה שהורכבה משלבים קיימים"),
         "status": "draft", "created_at": datetime.now().isoformat(timespec="seconds"),
+        "input_schema": json.loads(json.dumps(DEFAULT_AUTOMATION_INPUTS, ensure_ascii=False)),
     }
     save_workflow(runtime.workflow_path(automation_id), {"name": name, "steps": combined_steps})
     runtime.store.data.setdefault("automations", []).append(automation)
@@ -986,6 +1175,17 @@ def api_run_error_screenshot() -> Response:
     return send_file(path, mimetype="image/png")
 
 
+@app.get("/api/steps/<int:index>/screenshot")
+def api_step_screenshot(index: int) -> Response:
+    steps = runtime.read_workflow().get("steps", [])
+    if index < 0 or index >= len(steps):
+        return jsonify({"ok": False, "error": "השלב לא נמצא"}), 404
+    path = Path(str(steps[index].get("screenshot") or ""))
+    if not path.is_file():
+        return jsonify({"ok": False, "error": "לא נשמר צילום לשלב זה"}), 404
+    return send_file(path, mimetype="image/jpeg", max_age=0)
+
+
 @app.post("/api/steps")
 def api_add_step() -> Response:
     payload = request.get_json(force=True) or {}
@@ -1032,7 +1232,7 @@ def api_update_step(index: int) -> Response:
     if index < 0 or index >= len(steps):
         return jsonify({"ok": False, "error": "השלב לא נמצא"}), 404
     updates = request.get_json(force=True) or {}
-    allowed = {"name", "type", "scope", "target", "value", "timeout_seconds", "enabled", "credential_profile_id", "locator", "fallbacks", "page_url", "position", "confidence", "recorded_at"}
+    allowed = {"name", "type", "scope", "target", "value", "timeout_seconds", "enabled", "credential_profile_id", "locator", "fallbacks", "page_url", "position", "confidence", "recorded_at", "screenshot"}
     steps[index].update({key: value for key, value in updates.items() if key in allowed})
     runtime.write_workflow(workflow)
     return jsonify({"ok": True})
@@ -1049,6 +1249,12 @@ def api_bulk_steps() -> Response:
     if action == "delete":
         for index in reversed(valid):
             del steps[index]
+    elif action == "duplicate":
+        for index in reversed(valid):
+            duplicate = json.loads(json.dumps(steps[index], ensure_ascii=False))
+            duplicate["name"] = f"{duplicate.get('name', 'שלב')} (עותק)"
+            duplicate["recorded_at"] = datetime.now().isoformat(timespec="seconds")
+            steps.insert(index + 1, duplicate)
     elif action in {"pause", "resume"}:
         for index in valid:
             steps[index]["enabled"] = action == "resume"
@@ -1113,7 +1319,43 @@ def api_recording_stop() -> Response:
 
 @app.get("/api/recording/status")
 def api_recording_status() -> Response:
-    return jsonify({"state": runtime.recording_state, "message": runtime.recording_message})
+    return jsonify({
+        "state": runtime.recording_state,
+        "message": runtime.recording_message,
+        "transport": "raw-cdp-websocket",
+        "background": True,
+    })
+
+
+@sock.route("/ws/events")
+def websocket_events(ws: Any) -> None:
+    listener: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=200)
+    with runtime.lock:
+        runtime.event_listeners.append(listener)
+    try:
+        ws.send(json.dumps({
+            "type": "connected",
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "transport": "raw-cdp-websocket",
+            "background": True,
+            "recording_state": runtime.recording_state,
+        }, ensure_ascii=False))
+        while True:
+            try:
+                event = listener.get(timeout=15)
+            except queue.Empty:
+                event = {
+                    "type": "heartbeat",
+                    "timestamp": datetime.now().isoformat(timespec="seconds"),
+                    "transport": "raw-cdp-websocket",
+                }
+            ws.send(json.dumps(event, ensure_ascii=False))
+    except Exception:
+        pass
+    finally:
+        with runtime.lock:
+            if listener in runtime.event_listeners:
+                runtime.event_listeners.remove(listener)
 
 
 @app.get("/api/chrome/profiles")
@@ -1178,7 +1420,7 @@ def api_open_chrome() -> Response:
     try:
         profile_dir = Path(runtime.store.data["browser_profile_dir"])
         profile_dir.mkdir(parents=True, exist_ok=True)
-        port = int(runtime.store.data.get("chrome_debug_port", 9222))
+        port = int(runtime.store.data.get("chrome_debug_port", 9223))
         profile_directory = str(runtime.store.data.get("chrome_profile_directory") or "Default")
         subprocess.Popen([
             chrome_executable(),
@@ -1241,8 +1483,7 @@ def api_chrome_preview_select() -> Response:
         return jsonify({"ok": False, "error": "הלשונית שנבחרה אינה זמינה יותר"}), 404
     runtime.chrome_preview_target_id = target_id
     runtime.chrome_preview_frame = b""
-    if runtime.chrome_preview_process and runtime.chrome_preview_process.poll() is None:
-        runtime.chrome_preview_process.terminate()
+    runtime.stop_chrome_preview_process()
     return jsonify({"ok": True})
 
 
@@ -1258,8 +1499,13 @@ def suggested_step_from_detection(detected: dict[str, Any], action: str, sensiti
     if len(label) > 120:
         label = f"{label[:117].rstrip()}..."
     is_secret = bool(detected.get("isSecret")) or sensitive
+    is_choice = str(detected.get("role") or "").lower() in {"combobox", "listbox"} or bool(detected.get("isSelect"))
     is_fill = action == "type_text" or bool(detected.get("isField") and action == "inspect")
-    if is_fill:
+    if is_choice and not is_secret:
+        step_type = "select_option"
+        name = f"בחירה בשדה: {label}"
+        value = "{TODO}"
+    elif is_fill:
         step_type = "fill_secret" if is_secret else "smart_fill"
         name = "הזנת סיסמה" if is_secret else f"מילוי שדה: {label}"
         value = "" if is_secret else "{TODO}"
@@ -1314,8 +1560,7 @@ def api_chrome_interact() -> Response:
             new_page = opened[0]
             runtime.chrome_preview_target_id = str(new_page.get("id") or "")
             runtime.chrome_preview_frame = b""
-            if runtime.chrome_preview_process and runtime.chrome_preview_process.poll() is None:
-                runtime.chrome_preview_process.terminate()
+            runtime.stop_chrome_preview_process()
             result["switched_target"] = {
                 "id": runtime.chrome_preview_target_id,
                 "title": str(new_page.get("title") or ""),
@@ -1347,8 +1592,7 @@ def api_chrome_preview_toggle() -> Response:
     else:
         with runtime.lock:
             runtime.chrome_preview_frame = b""
-        if runtime.chrome_preview_process and runtime.chrome_preview_process.poll() is None:
-            runtime.chrome_preview_process.terminate()
+        runtime.stop_chrome_preview_process()
     return jsonify({"ok": True, **runtime.chrome_preview_status()})
 
 
@@ -1420,6 +1664,7 @@ def api_console() -> Response:
     cdp = runtime.chrome_cdp_status()
     connection_lines = [
         "=== מצב חיבורים ===",
+        "ארכיטקטורה: Google Chrome חיצוני ייעודי דרך CDP (ללא iframe / webview / Chromium מוטמע)",
         "React: מחובר http://127.0.0.1:18474",
         "Python: מחובר http://127.0.0.1:18473",
         f"Chrome CDP: {'מחובר' if cdp['connected'] else 'מנותק'} http://127.0.0.1:{cdp['port']}",
@@ -1452,13 +1697,6 @@ def api_export_logs() -> Response:
         writer.writerow({key: event[key] for key in writer.fieldnames})
     data = io.BytesIO(output.getvalue().encode("utf-8-sig"))
     return send_file(data, mimetype="text/csv", as_attachment=True, download_name="mavat_run_report.csv")
-
-
-@app.post("/api/classic/open")
-def api_open_classic() -> Response:
-    pythonw = Path(sys.executable).with_name("pythonw.exe")
-    subprocess.Popen([str(pythonw), str(ROOT_DIR / "app.py")], cwd=str(ROOT_DIR))
-    return jsonify({"ok": True})
 
 
 def main() -> None:

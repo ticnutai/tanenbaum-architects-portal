@@ -1,4 +1,4 @@
-import { Bot } from "lucide-react";
+import { Bot, Chrome } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -27,6 +27,10 @@ export function AutomationContext() {
       </div>
       <Badge variant={active.status === "active" ? "secondary" : "outline"}>
         {active.status === "active" ? "פעילה" : "טיוטה"}
+      </Badge>
+      <Badge variant="outline" title="המערכת מתחברת לחלון Google Chrome חיצוני באמצעות CDP">
+        <Chrome className="size-3" />
+        Chrome חיצוני · CDP
       </Badge>
     </div>
   );

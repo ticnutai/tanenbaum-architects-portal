@@ -15,6 +15,7 @@ import { Route as ClientsRouteImport } from './routes/clients'
 import { Route as LogsRouteImport } from './routes/logs'
 import { Route as ProfilesRouteImport } from './routes/profiles'
 import { Route as ProjectsRouteImport } from './routes/projects'
+import { Route as RecorderRouteImport } from './routes/recorder'
 import { Route as RunRouteImport } from './routes/run'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as WorkflowRouteImport } from './routes/workflow'
@@ -50,6 +51,11 @@ const ProjectsRoute = ProjectsRouteImport.update({
   path: '/projects',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RecorderRoute = RecorderRouteImport.update({
+  id: '/recorder',
+  path: '/recorder',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const RunRoute = RunRouteImport.update({
   id: '/run',
   path: '/run',
@@ -78,6 +84,7 @@ export interface FileRoutesByFullPath {
   '/logs': typeof LogsRoute
   '/profiles': typeof ProfilesRoute
   '/projects': typeof ProjectsRoute
+  '/recorder': typeof RecorderRoute
   '/run': typeof RunRoute
   '/settings': typeof SettingsRoute
   '/workflow': typeof WorkflowRoute
@@ -90,6 +97,7 @@ export interface FileRoutesByTo {
   '/logs': typeof LogsRoute
   '/profiles': typeof ProfilesRoute
   '/projects': typeof ProjectsRoute
+  '/recorder': typeof RecorderRoute
   '/run': typeof RunRoute
   '/settings': typeof SettingsRoute
   '/workflow': typeof WorkflowRoute
@@ -103,6 +111,7 @@ export interface FileRoutesById {
   '/logs': typeof LogsRoute
   '/profiles': typeof ProfilesRoute
   '/projects': typeof ProjectsRoute
+  '/recorder': typeof RecorderRoute
   '/run': typeof RunRoute
   '/settings': typeof SettingsRoute
   '/workflow': typeof WorkflowRoute
@@ -117,6 +126,7 @@ export interface FileRouteTypes {
     | '/logs'
     | '/profiles'
     | '/projects'
+    | '/recorder'
     | '/run'
     | '/settings'
     | '/workflow'
@@ -129,6 +139,7 @@ export interface FileRouteTypes {
     | '/logs'
     | '/profiles'
     | '/projects'
+    | '/recorder'
     | '/run'
     | '/settings'
     | '/workflow'
@@ -141,6 +152,7 @@ export interface FileRouteTypes {
     | '/logs'
     | '/profiles'
     | '/projects'
+    | '/recorder'
     | '/run'
     | '/settings'
     | '/workflow'
@@ -154,6 +166,7 @@ export interface RootRouteChildren {
   LogsRoute: typeof LogsRoute
   ProfilesRoute: typeof ProfilesRoute
   ProjectsRoute: typeof ProjectsRoute
+  RecorderRoute: typeof RecorderRoute
   RunRoute: typeof RunRoute
   SettingsRoute: typeof SettingsRoute
   WorkflowRoute: typeof WorkflowRoute
@@ -204,6 +217,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProjectsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/recorder': {
+      id: '/recorder'
+      path: '/recorder'
+      fullPath: '/recorder'
+      preLoaderRoute: typeof RecorderRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/run': {
       id: '/run'
       path: '/run'
@@ -242,6 +262,7 @@ const rootRouteChildren: RootRouteChildren = {
   LogsRoute: LogsRoute,
   ProfilesRoute: ProfilesRoute,
   ProjectsRoute: ProjectsRoute,
+  RecorderRoute: RecorderRoute,
   RunRoute: RunRoute,
   SettingsRoute: SettingsRoute,
   WorkflowRoute: WorkflowRoute,

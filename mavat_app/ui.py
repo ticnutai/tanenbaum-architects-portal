@@ -30,6 +30,7 @@ ACTION_TYPES = (
     "click_role",
     "fill_label",
     "fill_placeholder",
+    "select_option",
     "fill_secret",
     "wait_url",
     "wait_text",
@@ -415,7 +416,7 @@ class MavatApp(tk.Tk):
         if self.recorder_worker and self.recorder_worker.is_alive():
             messagebox.showinfo("הקלטה", "הקלטת הפעולות כבר פעילה")
             return
-        port = int(self.store.data.get("chrome_debug_port", 9222))
+        port = int(self.store.data.get("chrome_debug_port", 9223))
         self.recorder = BrowserRecorder(
             port,
             on_log=lambda text: self.events.put(("log", text)),
@@ -689,7 +690,7 @@ class MavatApp(tk.Tk):
             chrome = self._chrome_executable()
             profile_dir = Path(self.store.data["browser_profile_dir"])
             profile_dir.mkdir(parents=True, exist_ok=True)
-            port = int(self.store.data.get("chrome_debug_port", 9222))
+            port = int(self.store.data.get("chrome_debug_port", 9223))
             self._save_chrome_email()
             subprocess.Popen(
                 [
@@ -742,7 +743,7 @@ class MavatApp(tk.Tk):
             profile.id,
             {item.id: self.store.get_password(item.id) for item in self.store.profiles()},
             self.store.data["browser_profile_dir"],
-            int(self.store.data.get("chrome_debug_port", 9222)),
+            int(self.store.data.get("chrome_debug_port", 9223)),
             callbacks, self.dry_var.get(),
         )
         self.worker = threading.Thread(target=self.runner.run, daemon=True)

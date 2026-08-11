@@ -28,6 +28,7 @@ outputs/*.inspect.ndjson
 
 # Electron local artifacts
 release/
+.runtime/
 
 # Wrangler / Cloudflare
 .wrangler/

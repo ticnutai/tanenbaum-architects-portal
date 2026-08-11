@@ -1,15 +1,24 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 from typing import Any, Callable
+
+import websocket
+
+from mavat_app.cdp import CdpConnection, CdpEvent, page_targets
 
 
 RECORDER_SCRIPT = r"""
 (() => {
   if (window.__mavatRecorderInstalled) return;
   window.__mavatRecorderInstalled = true;
-  window.__mavatRecordedActions = [];
+
+  const emit = payload => {
+    try { window.__mavatRecordAction(JSON.stringify(payload)); }
+    catch (_) { /* binding is restored on the next execution context */ }
+  };
 
   const labelFor = (el) => {
     if (!el) return "";
@@ -64,14 +73,14 @@ RECORDER_SCRIPT = r"""
     const role = el.getAttribute("role") || (el.tagName === "A" ? "link" : "button");
     const name = visibleName(el);
     if (!name) return;
-    window.__mavatRecordedActions.push({kind: "click", role, name, ...descriptorFor(el), url: location.href, at: Date.now()});
+    emit({kind: "click", role, name, ...descriptorFor(el), url: location.href, at: Date.now()});
   }, true);
 
   document.addEventListener("change", (event) => {
     const el = event.target;
     if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement)) return;
     const fieldType = (el.getAttribute("type") || el.tagName.toLowerCase()).toLowerCase();
-    window.__mavatRecordedActions.push({
+    emit({
       kind: el instanceof HTMLSelectElement ? "select" : "fill",
       label: labelFor(el),
       secret: fieldType === "password",
@@ -94,12 +103,18 @@ class BrowserRecorder:
         on_step: Callable[[dict[str, Any]], None],
         on_started: Callable[[str], None],
         on_finished: Callable[[str], None],
+        target_fragments: tuple[str, ...] | None = None,
     ) -> None:
         self.debug_port = debug_port
         self.on_log = on_log
         self.on_step = on_step
         self.on_started = on_started
         self.on_finished = on_finished
+        self.target_fragments = target_fragments or (
+            "gov.il",
+            "mavat.moin.gov.il",
+            "login.gov.il",
+        )
         self.stop_event = threading.Event()
 
     def stop(self) -> None:
@@ -144,78 +159,126 @@ class BrowserRecorder:
             }
         return {
             "name": f"בחירה בשדה: {event.get('label', '')}",
-            "type": "manual",
+            "type": "select_option",
             "scope": "once",
             "target": event.get("label", ""),
-            "value": "בחר את הערך המתאים; יש לערוך שלב זה לאחר המיפוי",
+            "value": "{TODO}",
             "timeout_seconds": 30,
             "enabled": True,
+            **common,
         }
 
     def run(self) -> None:
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:
-            self.on_finished("Playwright אינו מותקן")
-            return
+        workers: dict[str, tuple[threading.Thread, threading.Event]] = {}
 
-        seen_frames: set[int] = set()
-        target_fragments = ("gov.il", "mavat.moin.gov.il", "login.gov.il")
-        try:
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.connect_over_cdp(
-                    f"http://127.0.0.1:{self.debug_port}", timeout=5000
+        def relevant(target: dict[str, Any]) -> bool:
+            url = str(target.get("url") or "").lower()
+            return any(fragment in url for fragment in self.target_fragments)
+
+        def observe(target: dict[str, Any], worker_stop: threading.Event) -> None:
+            target_id = str(target.get("id") or "")
+            contexts: set[int] = set()
+            connection: CdpConnection | None = None
+            binding_ready = False
+
+            def inject(context_id: int) -> None:
+                if not connection or connection.closed:
+                    return
+                try:
+                    connection.request(
+                        "Runtime.evaluate",
+                        {
+                            "expression": RECORDER_SCRIPT,
+                            "contextId": context_id,
+                            "returnByValue": False,
+                        },
+                    )
+                except Exception:
+                    contexts.discard(context_id)
+
+            def handle(event: CdpEvent) -> None:
+                nonlocal binding_ready
+                if event.method == "Runtime.executionContextCreated":
+                    context_id = int((event.params.get("context") or {}).get("id") or 0)
+                    if context_id:
+                        contexts.add(context_id)
+                        if binding_ready:
+                            inject(context_id)
+                    return
+                if event.method == "Runtime.executionContextDestroyed":
+                    contexts.discard(int(event.params.get("executionContextId") or 0))
+                    return
+                if event.method != "Runtime.bindingCalled":
+                    return
+                if event.params.get("name") != "__mavatRecordAction":
+                    return
+                try:
+                    raw_event = json.loads(str(event.params.get("payload") or "{}"))
+                    step = self._to_step(raw_event)
+                    self.on_step(step)
+                except Exception as exc:
+                    self.on_log(f"אירוע CDP לא נקלט: {exc}")
+
+            try:
+                connection = CdpConnection(str(target["webSocketDebuggerUrl"]), on_event=handle)
+                connection.request("Runtime.enable")
+                connection.request("Page.enable")
+                connection.request("Runtime.addBinding", {"name": "__mavatRecordAction"})
+                connection.request(
+                    "Page.addScriptToEvaluateOnNewDocument", {"source": RECORDER_SCRIPT}
                 )
-                if not browser.contexts:
-                    raise RuntimeError("לא נמצא חלון Chrome פעיל")
-                context = browser.contexts[0]
-                context.add_init_script(RECORDER_SCRIPT)
-                attached_count = 0
-                for page in list(context.pages):
-                    if not any(fragment in page.url.lower() for fragment in target_fragments):
+                binding_ready = True
+                for context_id in list(contexts):
+                    inject(context_id)
+                self.on_log(
+                    f"צופה Raw CDP מחובר ברקע: {target.get('title') or target.get('url')}"
+                )
+                while not self.stop_event.is_set() and not worker_stop.is_set():
+                    try:
+                        connection.pump_once()
+                    except websocket.WebSocketTimeoutException:
                         continue
-                    for frame in page.frames:
-                        try:
-                            frame.evaluate(RECORDER_SCRIPT)
-                            seen_frames.add(id(frame))
-                            attached_count += 1
-                        except Exception:
-                            continue
-                if attached_count == 0:
-                    raise RuntimeError("לא נמצא דף gov.il / login.gov.il / מבא״ת פתוח ב-Chrome")
-                self.on_started("מקליט עכשיו")
-                self.on_log("הקלטת פעולות התחילה. ערכי שדות אינם נשמרים.")
+            except Exception as exc:
+                if not self.stop_event.is_set() and not worker_stop.is_set():
+                    self.on_log(f"חיבור Raw CDP ללשונית נותק: {exc}")
+            finally:
+                if connection:
+                    connection.close()
 
-                while not self.stop_event.is_set():
-                    for page in list(context.pages):
-                        if not any(fragment in page.url.lower() for fragment in target_fragments):
-                            continue
-                        for frame in page.frames:
-                            frame_key = id(frame)
-                            if frame_key not in seen_frames:
-                                try:
-                                    frame.evaluate(RECORDER_SCRIPT)
-                                    self.on_log(f"מחובר למסגרת בדף: {page.title()} | {page.url}")
-                                    seen_frames.add(frame_key)
-                                except Exception:
-                                    continue
-                            try:
-                                installed = frame.evaluate(
-                                    "() => !!window.__mavatRecorderInstalled"
-                                )
-                                if not installed:
-                                    frame.evaluate(RECORDER_SCRIPT)
-                                events = frame.evaluate(
-                                    "() => (window.__mavatRecordedActions || []).splice(0)"
-                                )
-                            except Exception:
-                                seen_frames.discard(frame_key)
-                                continue
-                            for event in events or []:
-                                step = self._to_step(event)
-                                self.on_step(step)
-                                self.on_log(f"נקלט שלב: {step['name']}")
-                    time.sleep(0.35)
-                self.on_finished("הקלטת הפעולות נעצרה ונשמרה")
+        try:
+            deadline = time.time() + 6
+            started = False
+            while not self.stop_event.is_set():
+                targets = [target for target in page_targets(self.debug_port) if relevant(target)]
+                active_ids = {str(target.get("id") or "") for target in targets}
+                for target_id, (thread, worker_stop) in list(workers.items()):
+                    if target_id not in active_ids or not thread.is_alive():
+                        worker_stop.set()
+                        workers.pop(target_id, None)
+                for target in targets:
+                    target_id = str(target.get("id") or "")
+                    if not target_id or target_id in workers:
+                        continue
+                    worker_stop = threading.Event()
+                    thread = threading.Thread(
+                        target=observe, args=(target, worker_stop), daemon=True
+                    )
+                    workers[target_id] = (thread, worker_stop)
+                    thread.start()
+                if workers and not started:
+                    started = True
+                    self.on_started("מקליט עכשיו · Raw CDP ברקע")
+                    self.on_log(
+                        "הקלטת Raw CDP התחילה ברקע. ערכי שדות אינם נשמרים."
+                    )
+                if not started and time.time() > deadline:
+                    raise RuntimeError(
+                        "לא נמצא דף gov.il / login.gov.il / מבא״ת פתוח ב-Chrome"
+                    )
+                time.sleep(0.45)
+            self.on_finished("הקלטת Raw CDP ברקע נעצרה ונשמרה")
         except Exception as exc:
             self.on_finished(f"ההקלטה נכשלה: {exc}")
+        finally:
+            for thread, worker_stop in workers.values():
+                worker_stop.set()

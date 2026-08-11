@@ -10,8 +10,17 @@ import web_app
 with tempfile.TemporaryDirectory() as temp_dir:
     original_workflow_path = web_app.WORKFLOW_PATH
     original_log_path = web_app.LOG_PATH
+    original_automation_dir = web_app.runtime.automation_dir
+    original_store_data = web_app.runtime.store.data
     web_app.WORKFLOW_PATH = Path(temp_dir) / "workflow.json"
     web_app.LOG_PATH = Path(temp_dir) / "automation.log"
+    web_app.runtime.automation_dir = Path(temp_dir) / "automations"
+    web_app.runtime.automation_dir.mkdir()
+    web_app.runtime.store.data = {
+        **original_store_data,
+        "automations": [{"id": "test", "name": "test", "status": "active"}],
+        "active_automation_id": "test",
+    }
     web_app.WORKFLOW_PATH.write_text(
         json.dumps(
             {
@@ -30,10 +39,18 @@ with tempfile.TemporaryDirectory() as temp_dir:
         "[2026-08-09 10:00:00] הצלחה: בדיקה\n[2026-08-09 10:01:00] שגיאה: בדיקה\n",
         encoding="utf-8",
     )
+    web_app.runtime.workflow_path("test").write_text(
+        web_app.WORKFLOW_PATH.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    web_app.runtime.log_path().write_text(
+        web_app.LOG_PATH.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     try:
         client = web_app.app.test_client()
-        assert client.get("/workflow").status_code == 200
-        assert client.get("/runs").status_code == 200
+        assert client.get("/workflow").status_code == 302
+        assert client.get("/workflow").headers["Location"] == "http://127.0.0.1:18474/workflow"
+        assert client.get("/runs").status_code == 302
+        assert client.get("/runs").headers["Location"] == "http://127.0.0.1:18474/logs"
         workflow = client.get("/api/workflow").get_json()
         assert len(workflow["workflow"]["steps"]) == 2
         assert client.post(
@@ -52,5 +69,7 @@ with tempfile.TemporaryDirectory() as temp_dir:
     finally:
         web_app.WORKFLOW_PATH = original_workflow_path
         web_app.LOG_PATH = original_log_path
+        web_app.runtime.automation_dir = original_automation_dir
+        web_app.runtime.store.data = original_store_data
 
 print("Web UI API tests: OK")

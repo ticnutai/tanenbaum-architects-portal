@@ -18,6 +18,7 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { ThemeSwitcher } from "@/components/theme-switcher";
 import { Toaster } from "@/components/ui/sonner";
 import { Button } from "@/components/ui/button";
+import { SystemConsoleDock } from "@/components/system-console-dock";
 
 function NotFoundComponent() {
   return (
@@ -184,6 +185,7 @@ function RootComponent() {
           </div>
         </div>
       </SidebarProvider>
+      <SystemConsoleDock />
       <Toaster />
     </QueryClientProvider>
   );

@@ -4,7 +4,35 @@ declare global {
     mavatDesktop?: {
       selectDataFile(): Promise<string>;
       copyText(text: string): Promise<boolean>;
+      automationEngine: {
+        command<T = unknown>(command: string, payload?: Record<string, unknown>): Promise<T>;
+        onEvent(listener: (event: AutomationEngineEvent) => void): () => void;
+      };
+      layout: {
+        split(profileDir?: string): Promise<{ ok: boolean }>;
+        maximize(): Promise<boolean>;
+        getLinked(): Promise<boolean>;
+        setLinked(enabled: boolean): Promise<boolean>;
+      };
       platform: string;
     };
   }
+
+  type AutomationEngineEvent = {
+    kind: "event";
+    type: string;
+    at: string;
+    status?: AutomationEngineStatus;
+    [key: string]: unknown;
+  };
+
+  type AutomationEngineStatus = {
+    ready: boolean;
+    browserOpen: boolean;
+    profilePreparing: boolean;
+    running: boolean;
+    mode: string;
+    profileDir: string;
+    page: { title: string; url: string } | null;
+  };
 }

@@ -33,7 +33,7 @@ runner = WorkflowRunner(
     "profile-1",
     {"profile-2": "linked-secret"},
     "browser-profile",
-    9222,
+    9223,
     callbacks,
     True,
 )

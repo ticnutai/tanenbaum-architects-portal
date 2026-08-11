@@ -5,6 +5,8 @@ import {
   ArrowDown,
   ArrowUp,
   Camera,
+  ChevronDown,
+  ChevronUp,
   Chrome,
   ClipboardCopy,
   Download,
@@ -134,12 +136,9 @@ function RunPage() {
   const postAction = async (name: "start" | "stop" | "continue" | "pause" | "resume") => {
     setBusy(name);
     try {
-      const body =
-        name === "start" ? JSON.stringify({ profile_id: profileId, dry_run: dry }) : undefined;
-      const result = await mavatApi<{ message?: string }>(`/api/run/${name}`, {
-        method: "POST",
-        body,
-      });
+      const init: RequestInit = { method: "POST" };
+      if (name === "start") init.body = JSON.stringify({ profile_id: profileId, dry_run: dry });
+      const result = await mavatApi<{ message?: string }>(`/api/run/${name}`, init);
       toast.success(result.message || "הפעולה בוצעה");
       await Promise.all([loadLive(), loadBase()]);
     } catch (error) {
@@ -225,7 +224,7 @@ function RunPage() {
           label="חיבור Chrome"
           value={live?.chrome.connected ? "מחובר" : "מנותק"}
           good={live?.chrome.connected}
-          detail={`CDP · ${live?.chrome.port || 9222}`}
+          detail={`Google Chrome חיצוני · CDP ${live?.chrome.port || 9223}`}
         />
         <StatusTile
           icon={TestTube2}
@@ -497,6 +496,7 @@ export function LivePreview({
   const [sensitive, setSensitive] = useState(false);
   const [candidate, setCandidate] = useState<SmartCandidate | null>(null);
   const [working, setWorking] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
 
   const interact = async (payload: Record<string, unknown>) => {
     setWorking(true);
@@ -505,7 +505,7 @@ export function LivePreview({
         method: "POST",
         body: JSON.stringify({
           ...payload,
-          record: learning || payload.action === "inspect",
+          record: learning || payload["action"] === "inspect",
           sensitive,
         }),
       });
@@ -513,6 +513,7 @@ export function LivePreview({
       return result;
     } catch (error) {
       toast.error((error as Error).message);
+      return undefined;
     } finally {
       setWorking(false);
     }
@@ -570,9 +571,15 @@ export function LivePreview({
   };
   const saveCandidate = async () => {
     if (!candidate?.suggested_step) return;
+    const step = {
+      ...candidate.suggested_step,
+      ...(candidate.learning_screenshot
+        ? { screenshot: candidate.learning_screenshot }
+        : {}),
+    };
     await mavatApi("/api/steps", {
       method: "POST",
-      body: JSON.stringify({ step: candidate.suggested_step }),
+      body: JSON.stringify({ step }),
     });
     await onStepSaved?.();
     toast.success("הפעולה נוספה לסוף שלבי העבודה");
@@ -599,13 +606,30 @@ export function LivePreview({
               <span
                 className={`size-2.5 rounded-full ${live?.chrome.connected ? "animate-pulse bg-emerald-500" : "bg-destructive"}`}
               />
-              תצוגת Chrome אינטראקטיבית
+              תצוגה חיה מ־Chrome החיצוני
             </CardTitle>
-            <CardDescription className={full ? "text-slate-400" : ""}>
-              {preview?.title || "ממתין לחיבור לדפדפן"}
-            </CardDescription>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <Badge variant="outline" className={full ? "border-slate-600 text-slate-300" : ""}>
+                צילום CDP · לא iframe
+              </Badge>
+              <CardDescription className={full ? "text-slate-400" : ""}>
+                {preview?.title || "ממתין לחיבור לדפדפן"}
+              </CardDescription>
+            </div>
           </div>
           <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setCollapsed((value) => !value)}
+              title={collapsed ? "הרחב תצוגה חיה" : "מזער תצוגה חיה"}
+              aria-label={collapsed ? "הרחב תצוגה חיה" : "מזער תצוגה חיה"}
+            >
+              {collapsed ? <ChevronDown className="size-4" /> : <ChevronUp className="size-4" />}
+              {collapsed ? "הרחב" : "מזער"}
+            </Button>
+            {!collapsed && (
+              <>
             <Button
               variant={control ? "default" : "outline"}
               size="sm"
@@ -634,8 +658,12 @@ export function LivePreview({
             <Button variant="outline" size="icon" onClick={onFull}>
               {full ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
             </Button>
+              </>
+            )}
           </div>
         </div>
+        {!collapsed && (
+          <>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <Button
             variant="outline"
@@ -765,16 +793,19 @@ export function LivePreview({
             </Button>
           </div>
         )}
+          </>
+        )}
       </CardHeader>
-      <CardContent
-        className={`relative grid place-items-center p-0 ${full ? "min-h-0 flex-1" : "aspect-video bg-slate-950"}`}
-        onWheel={(event) => {
-          if (!control && !learning) return;
-          event.preventDefault();
-          const point = coordinates(event.clientX, event.clientY);
-          if (point) queueScroll(point, event.deltaX, event.deltaY);
-        }}
-      >
+      {!collapsed && (
+        <CardContent
+          className={`relative grid place-items-center p-0 ${full ? "min-h-0 flex-1" : "aspect-video bg-slate-950"}`}
+          onWheel={(event) => {
+            if (!control && !learning) return;
+            event.preventDefault();
+            const point = coordinates(event.clientX, event.clientY);
+            if (point) queueScroll(point, event.deltaX, event.deltaY);
+          }}
+        >
         {preview?.enabled && preview.available ? (
           <img
             ref={imageRef}
@@ -806,8 +837,9 @@ export function LivePreview({
             {working ? "מבצע..." : learning ? "חי · לימוד" : control ? "חי · שליטה" : "חי"}
           </div>
         )}
-      </CardContent>
-      {candidate?.suggested_step && (
+        </CardContent>
+      )}
+      {!collapsed && candidate?.suggested_step && (
         <div className={`border-t p-4 ${full ? "border-slate-700 bg-slate-900" : "bg-accent/5"}`}>
           <div className="flex flex-wrap items-center gap-3">
             <div className="min-w-0 flex-1">
@@ -880,7 +912,7 @@ function StatusTile({
   label: string;
   value: string;
   detail: string;
-  good?: boolean;
+  good: boolean | undefined;
 }) {
   return (
     <Card>

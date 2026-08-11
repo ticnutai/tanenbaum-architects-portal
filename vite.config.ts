@@ -14,12 +14,11 @@ export default defineConfig({
       strictPort: true,
       proxy: {
         "/api": "http://127.0.0.1:18473",
+        "/ws": {
+          target: "ws://127.0.0.1:18473",
+          ws: true,
+        },
       },
     },
-  },
-  tanstackStart: {
-    // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
-    // nitro/vite builds from this
-    server: { entry: "server" },
   },
 });

@@ -1,7 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Circle,
+  Copy,
   CopyPlus,
   GripVertical,
   KeyRound,
@@ -11,7 +12,6 @@ import {
   Plus,
   Radio,
   Search,
-  Square,
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -32,7 +32,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { mavatApi, type WorkflowData, type WorkflowStep } from "@/lib/mavat-api";
-import { LivePreview, type LiveData } from "@/routes/run";
 
 export const Route = createFileRoute("/workflow")({ component: WorkflowPage });
 const actions = [
@@ -43,6 +42,7 @@ const actions = [
   "click_role",
   "fill_label",
   "fill_placeholder",
+  "select_option",
   "fill_secret",
   "wait_url",
   "wait_text",
@@ -68,7 +68,6 @@ function WorkflowPage() {
     workflow: { name: "", steps: [] },
     profiles: {},
   });
-  const [recording, setRecording] = useState({ state: "idle", message: "ההקלטה כבויה" });
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
@@ -78,32 +77,11 @@ function WorkflowPage() {
   const [importing, setImporting] = useState(false);
   const [sourceId, setSourceId] = useState("");
   const [sourceSelected, setSourceSelected] = useState<Set<number>>(new Set());
-  const [live, setLive] = useState<LiveData | null>(null);
-  const [fullPreview, setFullPreview] = useState(false);
   const dragged = useRef<number | null>(null);
   const lastSelected = useRef<number | null>(null);
   const load = async () => setData(await mavatApi<WorkflowData>("/api/workflow"));
-  const poll = async () => setRecording(await mavatApi("/api/recording/status"));
-  const loadLive = async () => {
-    try {
-      setLive(await mavatApi<LiveData>("/api/chrome/live"));
-    } catch {
-      /* transient while Chrome or Python starts */
-    }
-  };
   useEffect(() => {
     load().catch((e) => toast.error(e.message));
-    poll();
-    const timer = setInterval(() => {
-      poll();
-      if (recording.state === "recording") load();
-    }, 1500);
-    return () => clearInterval(timer);
-  }, [recording.state]);
-  useEffect(() => {
-    loadLive();
-    const timer = setInterval(loadLive, 900);
-    return () => clearInterval(timer);
   }, []);
   const visible = useMemo(
     () =>
@@ -126,7 +104,7 @@ function WorkflowPage() {
   const select = (index: number, event: React.MouseEvent) => {
     const next = new Set(selected);
     if (event.shiftKey && lastSelected.current !== null) {
-      const [a, b] = [lastSelected.current, index].sort((x, y) => x - y);
+      const [a, b] = [lastSelected.current, index].sort((x, y) => x - y) as [number, number];
       for (let i = a; i <= b; i++) next.add(i);
     } else if (event.ctrlKey || event.metaKey) {
       if (next.has(index)) next.delete(index);
@@ -159,13 +137,6 @@ function WorkflowPage() {
     dragged.current = null;
     await load();
     toast.success("סדר השלבים נשמר");
-  };
-  const record = async (action: "start" | "stop") => {
-    const result = await mavatApi<{ message: string }>(`/api/recording/${action}`, {
-      method: "POST",
-    });
-    toast(result.message);
-    await poll();
   };
   const openLibrary = async () => {
     const value = await mavatApi<LibraryData>("/api/automations/library");
@@ -217,52 +188,24 @@ function WorkflowPage() {
       toast.error((error as Error).message);
     }
   };
-  const togglePreview = async () => {
-    await mavatApi("/api/chrome/preview/toggle", {
-      method: "POST",
-      body: JSON.stringify({ enabled: !live?.chrome.preview.enabled }),
-    });
-    await loadLive();
-  };
-  const selectPreviewTab = async (targetId: string) => {
-    await mavatApi("/api/chrome/preview/select", {
-      method: "POST",
-      body: JSON.stringify({ target_id: targetId }),
-    });
-    await loadLive();
-  };
-  const focusChrome = async () => {
-    await mavatApi("/api/chrome/focus", { method: "POST" });
-  };
-
   return (
     <div className="mx-auto max-w-6xl space-y-8">
       <AutomationContext />
       <PageHeader
         eyebrow="תהליך"
         title="שלבי עבודה"
-        description="ערוך, הוסף וסדר את פעולות האתר. ההקלטה קולטת לחיצות ושדות מ-Chrome אך אינה שומרת ערכי סיסמה."
+        description="השלם ערכים חסרים, ערוך, הוסף וסדר את פעולות האתר. הקלטת פעולות מתבצעת במסך נפרד."
         actions={
           <>
             <Button variant="outline" onClick={openLibrary}>
               <CopyPlus className="size-4" />
               ייבוא שלבים
             </Button>
-            <Button
-              variant="outline"
-              onClick={() => record("start")}
-              disabled={["recording", "connecting"].includes(recording.state)}
-            >
+            <Button variant="outline" asChild>
+              <Link to="/recorder">
               <Radio className="size-4" />
-              התחל הקלטה
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => record("stop")}
-              disabled={!["recording", "connecting"].includes(recording.state)}
-            >
-              <Square className="size-4" />
-              עצור
+              מעבר להקלטה
+              </Link>
             </Button>
             <Button onClick={() => setEditor({ index: null, step: { ...emptyStep } })}>
               <Plus className="size-4" />
@@ -272,37 +215,6 @@ function WorkflowPage() {
         }
       />
 
-      <Card className={recording.state === "recording" ? "border-destructive/40" : ""}>
-        <CardContent className="flex items-center gap-3 py-4">
-          <span
-            className={`size-2.5 rounded-full ${recording.state === "recording" ? "animate-pulse bg-destructive" : "bg-muted-foreground/50"}`}
-          />
-          <strong className="text-sm">{recording.message}</strong>
-        </CardContent>
-      </Card>
-      <section className="space-y-3">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <p className="text-sm font-semibold">דפדפן ההקלטה</p>
-            <p className="text-sm text-muted-foreground">
-              לחץ על „מצב לימוד”, בצע פעולה בחלון החי ובדוק את השלב המוצע. הפעולה לא תתווסף לרשימה
-              עד שתלחץ „שמור כשלב”.
-            </p>
-          </div>
-          <Badge variant={recording.state === "recording" ? "destructive" : "secondary"}>
-            {recording.state === "recording" ? "הקלטה פעילה" : "מוכן לבדיקה"}
-          </Badge>
-        </div>
-        <LivePreview
-          live={live}
-          full={fullPreview}
-          onFull={() => setFullPreview((value) => !value)}
-          onToggle={() => togglePreview().catch((error) => toast.error(error.message))}
-          onSelect={(id) => selectPreviewTab(id).catch((error) => toast.error(error.message))}
-          onFocus={() => focusChrome().catch((error) => toast.error(error.message))}
-          onStepSaved={load}
-        />
-      </section>
       <Card>
         <CardHeader>
           <CardTitle className="font-display text-2xl">רשימת השלבים</CardTitle>
@@ -349,6 +261,10 @@ function WorkflowPage() {
               <Button size="sm" variant="outline" onClick={() => bulk("pause")}>
                 <Pause className="size-4" />
                 השהה
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => bulk("duplicate")}>
+                <Copy className="size-4" />
+                העתק
               </Button>
               <Button size="sm" variant="outline" onClick={() => bulk("resume")}>
                 <Play className="size-4" />

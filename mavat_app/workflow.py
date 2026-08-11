@@ -143,7 +143,7 @@ class WorkflowRunner:
                 owns_context = False
                 try:
                     connected_browser = playwright.chromium.connect_over_cdp(
-                        f"http://127.0.0.1:{self.chrome_debug_port}", timeout=3000
+                        f"http://localhost:{self.chrome_debug_port}", timeout=3000
                     )
                     context = connected_browser.contexts[0]
                     self.callbacks.log("מחובר לחלון Chrome הקיים של המערכת")
@@ -284,7 +284,7 @@ class WorkflowRunner:
         value = self._resolved(step.get("value", ""), row)
         timeout = int(step.get("timeout_seconds", 30)) * 1000
 
-        if action in {"fill_label", "fill_placeholder", "smart_fill"} and re.search(r"\{(?:TODO|[^{}]+)\}", value):
+        if action in {"fill_label", "fill_placeholder", "smart_fill", "select_option"} and re.search(r"\{TODO\}", value):
             raise RuntimeError(f"הערך '{value}' לא מופה לנתון אמיתי")
 
         if action == "noop":
@@ -316,6 +316,25 @@ class WorkflowRunner:
             page.get_by_label(target, exact=False).first.fill(value, timeout=timeout)
         elif action == "fill_placeholder":
             page.get_by_placeholder(target, exact=False).first.fill(value, timeout=timeout)
+        elif action == "select_option":
+            control = page.get_by_label(target, exact=False).first
+            tag_name = control.evaluate("element => element.tagName.toLowerCase()")
+            if tag_name == "select":
+                try:
+                    control.select_option(label=value, timeout=timeout)
+                except Exception:
+                    control.select_option(value=value, timeout=timeout)
+            else:
+                control.click(timeout=timeout)
+                try:
+                    control.fill(value, timeout=timeout)
+                except Exception:
+                    page.keyboard.insert_text(value)
+                option = page.get_by_role("option", name=value, exact=False)
+                if option.count():
+                    option.first.click(timeout=timeout)
+                else:
+                    page.get_by_text(value, exact=True).last.click(timeout=timeout)
         elif action == "fill_secret":
             profile_id = str(step.get("credential_profile_id") or self.default_profile_id)
             secret = self.secrets_by_profile.get(profile_id, "") or self.password

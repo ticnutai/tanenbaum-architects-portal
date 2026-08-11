@@ -7,6 +7,8 @@ import {
   Settings,
   Compass,
   Bot,
+  Radio,
+  ListOrdered,
 } from "lucide-react";
 
 import {
@@ -35,6 +37,8 @@ const groups = [
     label: "אוטומציה",
     items: [
       { title: "אוטומציות", url: "/automations", icon: Bot },
+      { title: "הקלטת פעולות", url: "/recorder", icon: Radio },
+      { title: "שלבי עבודה", url: "/workflow", icon: ListOrdered },
       { title: "יומן ריצה", url: "/logs", icon: ScrollText },
     ],
   },
