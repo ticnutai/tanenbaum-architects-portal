@@ -1,6 +1,6 @@
 {
   "name": "tanstack_start_ts",
-  "version": "1.0.9",
+  "version": "1.0.13",
   "description": "מערכת שולחנית מקומית לבניית והרצת אוטומציות מבא״ת",
   "author": "Tanenbaum Architects",
   "private": true,
@@ -19,9 +19,13 @@
     "extension:zip": "npm --workspace mavat-recorder-extension run zip",
     "test:extension-sidepanel": "node tools/test_extension_sidepanel.cjs",
     "test:floating-recording": "node tools/test_floating_recording_control.cjs",
+    "test:electron-stability": "node tools/test_electron_stability.cjs",
+    "test:electron-runtime": "node tools/test_electron_runtime_stability.cjs",
+    "qa:source": "npm run test:electron-stability && python tools/test_architecture.py && python -m unittest discover -s tests -v && npm run build:electron-ui && npm run extension:build",
+    "qa:release": "npm run qa:source && npm run build:python-backend && electron-builder --win dir && npm run test:electron-runtime",
     "build:electron-ui": "vite build --config vite.electron.config.ts",
     "build:python-backend": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build_python_backend.ps1",
-    "dist:win": "npm run extension:build && npm run build:electron-ui && npm run build:python-backend && electron-builder --win nsis",
+    "dist:win": "npm run qa:release && electron-builder --win nsis",
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
@@ -29,6 +33,9 @@
     "format": "prettier --write ."
   },
   "dependencies": {
+    "playwright": "^1.58.0"
+  },
+  "devDependencies": {
     "@hookform/resolvers": "^5.2.2",
     "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-alert-dialog": "^1.1.15",
@@ -68,7 +75,6 @@
     "embla-carousel-react": "^8.6.0",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.575.0",
-    "playwright": "^1.58.0",
     "react": "^19.2.0",
     "react-day-picker": "^9.14.0",
     "react-dom": "^19.2.0",
@@ -81,9 +87,7 @@
     "tw-animate-css": "^1.3.4",
     "vaul": "^1.1.2",
     "vite-tsconfig-paths": "^6.0.2",
-    "zod": "^3.24.2"
-  },
-  "devDependencies": {
+    "zod": "^3.24.2",
     "@eslint/js": "^9.32.0",
     "@lovable.dev/vite-tanstack-config": "^2.10.0",
     "@types/node": "^22.16.5",

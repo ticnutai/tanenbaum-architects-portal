@@ -10,6 +10,7 @@ import web_app
 with tempfile.TemporaryDirectory() as temp_dir:
     original_workflow_path = web_app.WORKFLOW_PATH
     original_log_path = web_app.LOG_PATH
+    original_frontend_dir = web_app.FRONTEND_DIR
     original_automation_dir = web_app.runtime.automation_dir
     original_store_data = web_app.runtime.store.data
     web_app.WORKFLOW_PATH = Path(temp_dir) / "workflow.json"
@@ -47,10 +48,17 @@ with tempfile.TemporaryDirectory() as temp_dir:
     )
     try:
         client = web_app.app.test_client()
+        web_app.FRONTEND_DIR = Path(temp_dir) / "missing-frontend"
         assert client.get("/workflow").status_code == 302
         assert client.get("/workflow").headers["Location"] == "http://127.0.0.1:18474/workflow"
         assert client.get("/runs").status_code == 302
         assert client.get("/runs").headers["Location"] == "http://127.0.0.1:18474/logs"
+
+        packaged_frontend = Path(temp_dir) / "packaged-frontend"
+        packaged_frontend.mkdir()
+        web_app.FRONTEND_DIR = packaged_frontend
+        assert client.get("/workflow").headers["Location"] == "/app/workflow"
+        assert client.get("/runs").headers["Location"] == "/app/logs"
         workflow = client.get("/api/workflow").get_json()
         assert len(workflow["workflow"]["steps"]) == 2
         assert client.post(
@@ -69,6 +77,7 @@ with tempfile.TemporaryDirectory() as temp_dir:
     finally:
         web_app.WORKFLOW_PATH = original_workflow_path
         web_app.LOG_PATH = original_log_path
+        web_app.FRONTEND_DIR = original_frontend_dir
         web_app.runtime.automation_dir = original_automation_dir
         web_app.runtime.store.data = original_store_data
 

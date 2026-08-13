@@ -22,6 +22,9 @@ let context = null;
 let activePage = null;
 let chromeProcess = null;
 let profileSetupProcess = null;
+const attachedPages = new WeakSet();
+const pageConsoleWindows = new WeakMap();
+const ACTIONABLE_CONSOLE_LEVELS = new Set(["warning", "error", "assert"]);
 let runController = null;
 let manualResolver = null;
 let maintainBrowserConnection = false;
@@ -255,9 +258,36 @@ async function prepareChromeProfile() {
 
 function attachPage(page) {
   activePage = page;
-  page.on("console", (message) => event("console", {
-    level: message.type(), text: message.text(), url: page.url(),
-  }));
+  if (attachedPages.has(page)) {
+    void publishStatus();
+    return;
+  }
+  attachedPages.add(page);
+  // Do not forward an unlimited debug/info stream from the controlled site.
+  // That stream crosses two IPC boundaries before reaching React and can
+  // otherwise starve Electron's renderer even when no console is visible.
+  page.on("console", (message) => {
+    const level = message.type();
+    if (!ACTIONABLE_CONSOLE_LEVELS.has(level)) return;
+    const now = Date.now();
+    const current = pageConsoleWindows.get(page) || { startedAt: now, count: 0, dropped: 0 };
+    if (now - current.startedAt >= 1000) {
+      if (current.dropped) event("console-dropped", { count: current.dropped, url: page.url() });
+      current.startedAt = now;
+      current.count = 0;
+      current.dropped = 0;
+    }
+    if (current.count >= 10) {
+      current.dropped += 1;
+      pageConsoleWindows.set(page, current);
+      return;
+    }
+    current.count += 1;
+    pageConsoleWindows.set(page, current);
+    event("console", {
+      level, text: message.text().slice(0, 2000), url: page.url(),
+    });
+  });
   page.on("pageerror", (error) => event("console", {
     level: "pageerror", text: error.message, url: page.url(),
   }));

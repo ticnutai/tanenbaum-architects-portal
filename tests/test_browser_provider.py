@@ -38,13 +38,12 @@ class BrowserProviderTests(unittest.TestCase):
     @patch("mavat_app.browser_provider._browseros_mcp_healthy", return_value=True)
     @patch("mavat_app.browser_provider._probe_cdp")
     def test_auto_prefers_browseros(self, probe, _health) -> None:
-        probe.side_effect = [
-            BrowserEndpoint("browseros", "BrowserOS", True, 9101, pages=[]),
-            BrowserEndpoint("chrome", "Google Chrome", True, 9223, pages=[]),
-        ]
+        probe.return_value = BrowserEndpoint("browseros", "BrowserOS", True, 9101, pages=[])
         selected, candidates = select_browser_endpoint("auto")
         self.assertEqual(selected.provider, "browseros")
         self.assertEqual(len(candidates), 2)
+        self.assertEqual(probe.call_count, 1)
+        self.assertEqual(candidates[1].error, "לא נבדק — ספק הגלישה הפעיל מחובר")
 
     @patch("mavat_app.browser_provider._browseros_mcp_healthy", return_value=False)
     @patch("mavat_app.browser_provider._probe_cdp")
@@ -59,12 +58,11 @@ class BrowserProviderTests(unittest.TestCase):
     @patch("mavat_app.browser_provider._browseros_mcp_healthy", return_value=True)
     @patch("mavat_app.browser_provider._probe_cdp")
     def test_explicit_chrome_keeps_existing_path(self, probe, _health) -> None:
-        probe.side_effect = [
-            BrowserEndpoint("browseros", "BrowserOS", True, 9101, pages=[]),
-            BrowserEndpoint("chrome", "Google Chrome", True, 9223, pages=[]),
-        ]
+        probe.return_value = BrowserEndpoint("chrome", "Google Chrome", True, 9223, pages=[])
         selected, _ = select_browser_endpoint("chrome")
         self.assertEqual(selected.provider, "chrome")
+        self.assertEqual(probe.call_count, 1)
+        _health.assert_not_called()
 
 
 if __name__ == "__main__":

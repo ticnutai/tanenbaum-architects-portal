@@ -1,16 +1,44 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
-// Send a real heartbeat from the renderer event loop. Probing a sandboxed
-// renderer with webContents.executeJavaScript is unreliable and can mistake a
-// healthy page for a frozen one.
-const sendRendererHeartbeat = () => {
-  ipcRenderer.send("renderer-heartbeat", {
-    at: Date.now(),
-    url: globalThis.location?.href || "",
+let lastDiagnosticTick = performance.now();
+let lastUserEvent = null;
+let lastLongTask = null;
+
+for (const eventName of ["pointerdown", "keydown", "wheel", "focus", "blur", "visibilitychange"]) {
+  globalThis.addEventListener(eventName, (event) => {
+    const target = event.target;
+    lastUserEvent = {
+      type: eventName,
+      at: Date.now(),
+      tag: String(target?.tagName || "").toLowerCase().slice(0, 30),
+      label: String(target?.getAttribute?.("aria-label") || target?.getAttribute?.("title") || "").slice(0, 120),
+    };
+  }, true);
+}
+
+try {
+  const observer = new PerformanceObserver((list) => {
+    const entry = list.getEntries().at(-1);
+    if (entry) lastLongTask = { at: Date.now(), durationMs: Math.round(entry.duration) };
   });
-};
-sendRendererHeartbeat();
-setInterval(sendRendererHeartbeat, 2000);
+  observer.observe({ type: "longtask", buffered: true });
+} catch {
+  // Long Task API availability varies between Chromium contexts.
+}
+
+setInterval(() => {
+  const now = performance.now();
+  const lagMs = Math.max(0, Math.round(now - lastDiagnosticTick - 500));
+  lastDiagnosticTick = now;
+  ipcRenderer.send("renderer-diagnostics", {
+    at: Date.now(),
+    lagMs,
+    visibility: globalThis.document?.visibilityState || "",
+    route: globalThis.location?.href || "",
+    lastEvent: lastUserEvent,
+    longTask: lastLongTask,
+  });
+}, 500);
 
 // Record only control metadata, never form values or keystrokes. This leaves a
 // useful last-action trail when a renderer hangs during a real user session.
@@ -46,8 +74,14 @@ contextBridge.exposeInMainWorld("mavatDesktop", {
     command: (command, payload = {}) => ipcRenderer.invoke("automation-engine:command", command, payload),
     onEvent: (listener) => {
       const handler = (_event, message) => listener(message);
+      ipcRenderer.send("automation-engine:subscribe");
       ipcRenderer.on("automation-engine:event", handler);
-      return () => ipcRenderer.removeListener("automation-engine:event", handler);
+      return () => {
+        ipcRenderer.removeListener("automation-engine:event", handler);
+        if (ipcRenderer.listenerCount("automation-engine:event") === 0) {
+          ipcRenderer.send("automation-engine:unsubscribe");
+        }
+      };
     },
   },
   layout: {

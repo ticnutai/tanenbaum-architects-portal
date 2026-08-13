@@ -13,7 +13,6 @@ import sys
 import threading
 import time
 import uuid
-import webbrowser
 import urllib.error
 import urllib.request
 import websocket
@@ -1221,11 +1220,15 @@ def packaged_favicon() -> Response:
 
 @app.get("/workflow")
 def workflow_page() -> Response:
+    if FRONTEND_DIR.exists():
+        return redirect("/app/workflow")
     return redirect("http://127.0.0.1:18474/workflow")
 
 
 @app.get("/runs")
 def runs_page() -> Response:
+    if FRONTEND_DIR.exists():
+        return redirect("/app/logs")
     return redirect("http://127.0.0.1:18474/logs")
 
 
@@ -2191,7 +2194,12 @@ def api_export_logs() -> Response:
 
 
 def main() -> None:
-    if "--no-browser" not in sys.argv:
+    # Never create a tab in the user's default browser merely because the
+    # backend was started or restarted. Opening a browser is an explicit,
+    # developer-only action.
+    if "--open-browser" in sys.argv:
+        import webbrowser
+
         url = f"http://127.0.0.1:{WEB_PORT}/workflow"
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     app.run(host="127.0.0.1", port=WEB_PORT, debug=False, use_reloader=False)

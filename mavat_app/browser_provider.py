@@ -127,6 +127,33 @@ def discover_browser_endpoints(
     return [browseros, chrome]
 
 
+def _unprobed_endpoint(
+    provider: str,
+    display_name: str,
+    port: int,
+    *,
+    mcp_url: str = "",
+) -> BrowserEndpoint:
+    """Represent an inactive fallback without opening another browser connection."""
+    return BrowserEndpoint(
+        provider=provider,
+        display_name=display_name,
+        connected=False,
+        cdp_port=port,
+        pages=[],
+        mcp_url=mcp_url,
+        error="לא נבדק — ספק הגלישה הפעיל מחובר",
+    )
+
+
+def _probe_browseros(port: int, mcp_url: str) -> BrowserEndpoint:
+    endpoint = _probe_cdp("browseros", "BrowserOS", port, mcp_url)
+    if endpoint.connected and not _browseros_mcp_healthy(mcp_url):
+        endpoint.connected = False
+        endpoint.error = "שרת BrowserOS MCP אינו בריא"
+    return endpoint
+
+
 def select_browser_endpoint(
     preferred: str = "auto",
     chrome_port: int = 9223,
@@ -134,24 +161,33 @@ def select_browser_endpoint(
     browseros_mcp_url: str = "",
     browseros_config_path: Path | None = None,
 ) -> tuple[BrowserEndpoint, list[BrowserEndpoint]]:
-    candidates = discover_browser_endpoints(
-        chrome_port=chrome_port,
-        browseros_cdp_port=browseros_cdp_port,
-        browseros_mcp_url=browseros_mcp_url,
-        browseros_config_path=browseros_config_path,
-    )
-    connected = {item.provider: item for item in candidates if item.connected}
     requested = str(preferred or "auto").strip().lower()
+    browseros_port, mcp_url = browseros_connection_settings(
+        browseros_config_path, browseros_cdp_port, browseros_mcp_url
+    )
+    chrome_port = int(chrome_port)
+
+    # Probe exactly one provider during normal operation. The fallback is only
+    # touched after the preferred provider is unavailable, so status polling
+    # cannot create parallel CDP/MCP traffic or a misleading dual connection.
     if requested == "chrome":
-        selected = connected.get("chrome") or connected.get("browseros")
-    else:
-        # BrowserOS is intentionally preferred in auto mode: its MCP and CDP
-        # endpoints are owned by the browser and survive application restarts.
-        selected = connected.get("browseros") or connected.get("chrome")
-    if selected:
-        return selected, candidates
-    desired = candidates[1] if requested == "chrome" else candidates[0]
-    return desired, candidates
+        chrome = _probe_cdp("chrome", "Google Chrome", chrome_port)
+        if chrome.connected:
+            browseros = _unprobed_endpoint(
+                "browseros", "BrowserOS", browseros_port, mcp_url=mcp_url
+            )
+            return chrome, [browseros, chrome]
+        browseros = _probe_browseros(browseros_port, mcp_url)
+        return (browseros if browseros.connected else chrome), [browseros, chrome]
+
+    # BrowserOS is intentionally preferred in auto mode: its MCP and CDP
+    # endpoints are owned by the browser and survive application restarts.
+    browseros = _probe_browseros(browseros_port, mcp_url)
+    if browseros.connected:
+        chrome = _unprobed_endpoint("chrome", "Google Chrome", chrome_port)
+        return browseros, [browseros, chrome]
+    chrome = _probe_cdp("chrome", "Google Chrome", chrome_port)
+    return (chrome if chrome.connected else browseros), [browseros, chrome]
 
 
 def browseros_mcp_call(mcp_url: str, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
