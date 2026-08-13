@@ -1,6 +1,12 @@
 {
   "name": "tanstack_start_ts",
+  "version": "1.0.9",
+  "description": "מערכת שולחנית מקומית לבניית והרצת אוטומציות מבא״ת",
+  "author": "Tanenbaum Architects",
   "private": true,
+  "workspaces": [
+    "browser-extension"
+  ],
   "main": "electron/main.cjs",
   "sideEffects": false,
   "type": "module",
@@ -8,6 +14,14 @@
     "dev": "vite dev",
     "desktop": "electron .",
     "desktop:dev": "electron .",
+    "extension:dev": "npm --workspace mavat-recorder-extension run dev",
+    "extension:build": "npm --workspace mavat-recorder-extension run build",
+    "extension:zip": "npm --workspace mavat-recorder-extension run zip",
+    "test:extension-sidepanel": "node tools/test_extension_sidepanel.cjs",
+    "test:floating-recording": "node tools/test_floating_recording_control.cjs",
+    "build:electron-ui": "vite build --config vite.electron.config.ts",
+    "build:python-backend": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build_python_backend.ps1",
+    "dist:win": "npm run extension:build && npm run build:electron-ui && npm run build:python-backend && electron-builder --win nsis",
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
@@ -77,6 +91,7 @@
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.2.0",
     "electron": "^39.2.7",
+    "electron-builder": "^26.15.3",
     "eslint": "^9.32.0",
     "eslint-config-prettier": "^10.1.1",
     "eslint-plugin-prettier": "^5.2.6",
@@ -90,6 +105,7 @@
     "vite": "^8.2.0"
   },
   "allowScripts": {
-    "electron@39.8.10": true
+    "electron@39.8.10": true,
+    "electron-builder@26.0.12": true
   }
 }

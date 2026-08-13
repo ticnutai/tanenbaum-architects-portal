@@ -67,6 +67,9 @@ type ConsoleEvent = { timestamp: string; level: string; text: string; url: strin
 export type LiveData = {
   chrome: {
     connected: boolean;
+    provider: "browseros" | "chrome";
+    display_name: string;
+    mcp_url?: string;
     browser: string;
     port: number;
     profile_directory: string;
@@ -221,10 +224,10 @@ function RunPage() {
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatusTile
           icon={live?.chrome.connected ? Wifi : WifiOff}
-          label="חיבור Chrome"
+          label="חיבור דפדפן"
           value={live?.chrome.connected ? "מחובר" : "מנותק"}
           good={live?.chrome.connected}
-          detail={`Google Chrome חיצוני · CDP ${live?.chrome.port || 9223}`}
+          detail={`${live?.chrome.display_name || "דפדפן אוטומציה"} · CDP ${live?.chrome.port || "—"}${live?.chrome.provider === "browseros" ? " · MCP מקומי" : ""}`}
         />
         <StatusTile
           icon={TestTube2}
@@ -475,6 +478,7 @@ export function LivePreview({
   onSelect,
   onFocus,
   onStepSaved,
+  recordingMode = false,
 }: {
   live: LiveData | null;
   full: boolean;
@@ -483,6 +487,7 @@ export function LivePreview({
   onSelect: (id: string) => void;
   onFocus: () => void;
   onStepSaved?: () => void | Promise<void>;
+  recordingMode?: boolean;
 }) {
   const preview = live?.chrome.preview;
   const imageRef = useRef<HTMLImageElement>(null);
@@ -497,6 +502,12 @@ export function LivePreview({
   const [candidate, setCandidate] = useState<SmartCandidate | null>(null);
   const [working, setWorking] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    if (!recordingMode) return;
+    setControl(true);
+    setLearning(false);
+  }, [recordingMode]);
 
   const interact = async (payload: Record<string, unknown>) => {
     setWorking(true);
@@ -606,7 +617,7 @@ export function LivePreview({
               <span
                 className={`size-2.5 rounded-full ${live?.chrome.connected ? "animate-pulse bg-emerald-500" : "bg-destructive"}`}
               />
-              תצוגה חיה מ־Chrome החיצוני
+              תצוגה חיה מ־{live?.chrome.display_name || "הדפדפן החיצוני"}
             </CardTitle>
             <div className="mt-1 flex flex-wrap items-center gap-2">
               <Badge variant="outline" className={full ? "border-slate-600 text-slate-300" : ""}>
@@ -633,11 +644,15 @@ export function LivePreview({
             <Button
               variant={control ? "default" : "outline"}
               size="sm"
-              onClick={() => setControl((value) => !value)}
+              onClick={() => {
+                if (!recordingMode) setControl((value) => !value);
+              }}
+              disabled={recordingMode}
             >
               <MousePointer2 className="size-4" />
-              {control ? "שליטה פעילה" : "אפשר שליטה"}
+              {recordingMode ? "שליטה והקלטה פעילות" : control ? "שליטה פעילה" : "אפשר שליטה"}
             </Button>
+            {!recordingMode && (
             <Button
               variant={learning ? "destructive" : "outline"}
               size="sm"
@@ -651,6 +666,7 @@ export function LivePreview({
               />
               {learning ? "מקליט פעולות" : "מצב לימוד"}
             </Button>
+            )}
             <Button variant="outline" size="sm" onClick={onToggle}>
               {preview?.enabled ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
               {preview?.enabled ? "הסתר" : "הצג"}
@@ -834,7 +850,7 @@ export function LivePreview({
         {preview?.enabled && preview.available && (
           <div className="absolute bottom-3 right-3 flex items-center gap-2 rounded-full bg-black/70 px-3 py-1.5 text-xs text-white">
             <span className="size-2 animate-pulse rounded-full bg-red-500" />
-            {working ? "מבצע..." : learning ? "חי · לימוד" : control ? "חי · שליטה" : "חי"}
+            {working ? "מבצע..." : recordingMode ? "חי · שליטה והקלטה" : learning ? "חי · לימוד" : control ? "חי · שליטה" : "חי"}
           </div>
         )}
         </CardContent>
@@ -953,7 +969,7 @@ function ConsoleModal({ content, onClose }: { content: string; onClose: () => vo
       <section className="flex h-[min(800px,calc(100vh-40px))] w-[min(1200px,calc(100vw-40px))] flex-col rounded-xl border border-slate-700 bg-slate-950 p-5 text-slate-100 shadow-2xl">
         <header className="mb-4 flex items-center justify-between border-b border-slate-700 pb-4">
           <div>
-            <p className="text-xs tracking-[.2em] text-slate-400">PYTHON · CHROME CDP · REACT</p>
+            <p className="text-xs tracking-[.2em] text-slate-400">PYTHON · BROWSER CDP/MCP · REACT</p>
             <h2 className="font-display text-2xl">קונסול ואבחון מלא</h2>
           </div>
           <div className="flex gap-2">

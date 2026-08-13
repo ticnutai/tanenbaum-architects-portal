@@ -24,25 +24,33 @@ from typing import Any
 os.environ.setdefault("PYTHONUTF8", "1")
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
-from flask import Flask, Response, jsonify, redirect, request, send_file
+from flask import Flask, Response, jsonify, redirect, request, send_file, send_from_directory
 from flask_sock import Sock
 from werkzeug.utils import secure_filename
 
 from mavat_app.config import ConfigStore
+from mavat_app.browser_provider import (
+    BrowserEndpoint,
+    open_browseros_page,
+    select_browser_endpoint,
+)
 from mavat_app.cdp import CdpConnection, CdpEvent, page_targets
 from mavat_app.data_loader import load_records
+from mavat_app.extension_bridge import ExtensionBridge, extension_id_from_origin
 from mavat_app.recorder import BrowserRecorder
 from mavat_app.workflow import RunCallbacks, WorkflowRunner, load_workflow, save_workflow
 
 
-ROOT_DIR = Path(__file__).resolve().parent
+ROOT_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+DATA_DIR = Path(os.environ.get("MAVAT_DATA_DIR", ROOT_DIR))
 WORKFLOW_PATH = ROOT_DIR / "workflow.json"
-LOG_PATH = ROOT_DIR / "run_logs" / "automation.log"
+LOG_PATH = DATA_DIR / "run_logs" / "automation.log"
 MAVAT_URL = "https://www.gov.il/he/service/mvat"
-WEB_PORT = 18473
+WEB_PORT = int(os.environ.get("MAVAT_WEB_PORT", "18473"))
 
 app = Flask(__name__, template_folder="web/templates", static_folder="web/static")
 sock = Sock(app)
+FRONTEND_DIR = Path(os.environ.get("MAVAT_FRONTEND_DIR", ROOT_DIR / "dist-electron"))
 
 
 class Runtime:
@@ -90,6 +98,9 @@ class Runtime:
         self.last_recorded_fingerprint = ""
         self.last_recorded_at = 0.0
         self.event_listeners: list[queue.Queue[dict[str, Any]]] = []
+        self.extension_live_connections: dict[str, int] = {}
+        self.workflow_revision = 0
+        self.extension_bridge = ExtensionBridge(self.store)
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         self.automation_dir = self.store.base_dir / "automations"
         self.automation_dir.mkdir(parents=True, exist_ok=True)
@@ -116,6 +127,12 @@ class Runtime:
         if not target.exists():
             source = load_workflow(WORKFLOW_PATH)
             save_workflow(target, source)
+
+    def extension_status(self, *, include_code: bool = False) -> dict[str, Any]:
+        result = self.extension_bridge.status(include_code=include_code)
+        with self.lock:
+            result["live_count"] = sum(self.extension_live_connections.values())
+        return result
 
     def automations(self) -> list[dict[str, Any]]:
         return list(self.store.data.get("automations") or [])
@@ -153,29 +170,35 @@ class Runtime:
         }
 
     def chrome_cdp_status(self) -> dict[str, Any]:
-        port = int(self.store.data.get("chrome_debug_port", 9223))
-        try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1) as response:
-                version = json.load(response)
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=1) as response:
-                targets = json.load(response)
-            pages = [item for item in targets if item.get("type") == "page" and str(item.get("url", "")).startswith("http")]
-            return {
-                "connected": True,
-                "browser": str(version.get("Browser") or "Chrome"),
-                "port": port,
-                "pages": [{"id": str(item.get("id") or ""), "title": str(item.get("title") or ""), "url": str(item.get("url") or "")} for item in pages],
-                "profile_directory": str(self.store.data.get("chrome_profile_directory") or "Default"),
-                "console_events": len(self.chrome_console_events),
-                "preview": self.chrome_preview_status(),
-            }
-        except (OSError, urllib.error.URLError, json.JSONDecodeError):
-            return {
-                "connected": False, "browser": "", "port": port, "pages": [],
-                "profile_directory": str(self.store.data.get("chrome_profile_directory") or "Default"),
-                "console_events": len(self.chrome_console_events),
-                "preview": self.chrome_preview_status(),
-            }
+        selected, candidates = self.browser_endpoint()
+        result = selected.to_dict()
+        result.update({
+            "port": selected.cdp_port,
+            "profile_directory": (
+                "BrowserOS"
+                if selected.provider == "browseros"
+                else str(self.store.data.get("chrome_profile_directory") or "Default")
+            ),
+            "console_events": len(self.chrome_console_events),
+            "preview": self.chrome_preview_status(),
+            "candidates": [item.to_dict() for item in candidates],
+            "fallback_available": any(
+                item.connected and item.provider != selected.provider for item in candidates
+            ),
+        })
+        return result
+
+    def browser_endpoint(self) -> tuple[BrowserEndpoint, list[BrowserEndpoint]]:
+        return select_browser_endpoint(
+            preferred=str(self.store.data.get("browser_provider") or "auto"),
+            chrome_port=int(self.store.data.get("chrome_debug_port", 9223)),
+            browseros_cdp_port=int(self.store.data.get("browseros_cdp_port") or 0),
+            browseros_mcp_url=str(self.store.data.get("browseros_mcp_url") or ""),
+        )
+
+    def browser_debug_port(self) -> int:
+        selected, _ = self.browser_endpoint()
+        return selected.cdp_port
 
     def chrome_preview_status(self) -> dict[str, Any]:
         return {
@@ -220,12 +243,12 @@ class Runtime:
                     time.sleep(0.5)
                     continue
                 try:
-                    self.chrome_preview_error = "מתחבר ל-Chrome..."
+                    self.chrome_preview_error = "מתחבר לדפדפן האוטומציה..."
                     creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
                     selected_target = self.chrome_preview_target_id
                     process = subprocess.Popen(
                         [sys.executable, "-m", "mavat_app.preview_worker",
-                         str(int(self.store.data.get("chrome_debug_port", 9223))), selected_target],
+                         str(self.browser_debug_port()), selected_target],
                         cwd=str(ROOT_DIR), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                         env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
                         creationflags=creation_flags,
@@ -251,7 +274,7 @@ class Runtime:
                             self.chrome_preview_title = str(header.get("title") or self.chrome_preview_title)
                             self.chrome_preview_error = str(header.get("error") or "")
                 except Exception as exc:
-                    self.chrome_preview_error = f"Chrome CDP מנותק: {exc}"
+                    self.chrome_preview_error = f"חיבור CDP נותק: {exc}"
                 finally:
                     self.stop_chrome_preview_process()
                 time.sleep(1.0)
@@ -264,7 +287,7 @@ class Runtime:
             return
 
         def monitor() -> None:
-            port = int(self.store.data.get("chrome_debug_port", 9223))
+            port = self.browser_debug_port()
             workers: dict[str, threading.Thread] = {}
 
             def append_event(level: str, text: str, page_url: str) -> None:
@@ -349,7 +372,7 @@ class Runtime:
             creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
             result = subprocess.run(
                 [sys.executable, "-m", "mavat_app.interactive_browser",
-                 str(int(self.store.data.get("chrome_debug_port", 9223))), self.chrome_preview_target_id],
+                 str(self.browser_debug_port()), self.chrome_preview_target_id],
                 cwd=str(ROOT_DIR), input=json.dumps(command, ensure_ascii=False) + "\n",
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace", timeout=18,
@@ -385,11 +408,25 @@ class Runtime:
 
     def read_workflow(self) -> dict[str, Any]:
         with self.lock:
-            return load_workflow(self.workflow_path())
+            workflow = load_workflow(self.workflow_path())
+        for step in workflow.get("steps", []):
+            if step.get("type") != "manual" or "login.gov.il" not in str(step.get("page_url") or ""):
+                continue
+            step["name"] = "אימות מאובטח והמשך אוטומטי למבא״ת"
+            step["value"] = "השלם את האימות המאובטח בדפדפן; האוטומציה תמשיך לבד לאחר הצלחת הכניסה"
+            step["auto_continue"] = True
+            step["resume_when"] = {
+                "url_not_contains": "login.gov.il",
+                "url_contains_any": ["plan.mavat.moin.gov.il", "mavat.moin.gov.il"],
+            }
+        return workflow
 
     def write_workflow(self, workflow: dict[str, Any]) -> None:
         with self.lock:
             save_workflow(self.workflow_path(), workflow)
+            self.workflow_revision += 1
+            revision = self.workflow_revision
+        self.publish_event("workflow-updated", revision=revision)
 
     def log(self, message: str) -> None:
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -416,8 +453,31 @@ class Runtime:
                 except (queue.Empty, queue.Full):
                     pass
 
+    def follow_chrome_target(self, target_id: str, url: str = "", title: str = "") -> None:
+        if not target_id:
+            return
+        changed = target_id != self.chrome_preview_target_id
+        if changed:
+            self.chrome_preview_target_id = target_id
+            self.chrome_preview_frame = b""
+            self.stop_chrome_preview_process()
+        if url:
+            self.chrome_preview_url = url
+        if title:
+            self.chrome_preview_title = title
+        self.publish_event(
+            "recording-target",
+            target_id=target_id,
+            url=url,
+            title=title,
+            changed=changed,
+        )
+
     def recorded_step(self, step: dict[str, Any]) -> None:
         now = time.time()
+        target_id = str(step.pop("_target_id", "") or "")
+        if target_id:
+            self.follow_chrome_target(target_id)
         step.setdefault("recorded_at", datetime.now().isoformat(timespec="seconds"))
         fingerprint = json.dumps(
             {
@@ -425,6 +485,7 @@ class Runtime:
                 "target": step.get("target"),
                 "page_url": step.get("page_url"),
                 "locator": step.get("locator"),
+                "value": step.get("value") if step.get("type") != "fill_secret" else "",
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -458,13 +519,60 @@ class Runtime:
                 name=str(step.get("name") or step.get("type") or ""),
                 transport="raw-cdp-websocket",
             )
+            if step.get("type") == "manual" and step.get("auto_continue"):
+                self.log("זוהה אימות WebAuthn מאובטח: הבחירה מתבצעת ידנית והאוטומציה תמשיך אוטומטית לאחר הצלחה")
+                self.publish_event(
+                    "secure-auth-detected",
+                    message="נדרש אישור בדיאלוג המאובטח של Chrome; לאחר הבחירה ההקלטה והאוטומציה ממשיכות לבד",
+                )
+
+    def recorded_secret(self, step: dict[str, Any], secret_value: str) -> None:
+        if not secret_value:
+            self.recorded_step(step)
+            return
+        workflow = self.read_workflow()
+        profiles = self.store.profiles()
+        linked_profile_id = next(
+            (
+                str(item.get("credential_profile_id") or "")
+                for item in reversed(workflow.get("steps", []))
+                if item.get("type") == "fill_secret"
+                and item.get("credential_profile_id")
+            ),
+            "",
+        )
+        profile_id = linked_profile_id or (profiles[0].id if len(profiles) == 1 else "")
+        if not profile_id:
+            self.log(
+                "נקלט שדה סיסמה, אך לא נמצא פרופיל כניסה יחיד; נוסף שלב מאובטח ללא שמירת הערך"
+            )
+            self.recorded_step(step)
+            return
+        try:
+            self.store.set_password(profile_id, secret_value, persist_password=True)
+            step["credential_profile_id"] = profile_id
+            self.recorded_step(step)
+            self.log(
+                "הסיסמה שנקלטה נשמרה בכספת Windows Credential Manager וקושרה לשלב; הערך לא נכתב ל-workflow או ללוג"
+            )
+        except Exception as exc:
+            self.log(f"שמירת הסיסמה בכספת נכשלה: {exc}")
+            self.recorded_step(step)
 
     def start_recording(self) -> tuple[bool, str]:
         if self.recorder_thread and self.recorder_thread.is_alive():
             return True, "ההקלטה כבר פעילה"
         self.recording_state = "connecting"
-        self.recording_message = "מתחבר ל-Chrome..."
-        port = int(self.store.data.get("chrome_debug_port", 9223))
+        self.recording_message = "מתחבר לדפדפן האוטומציה..."
+        selected, _ = self.browser_endpoint()
+        has_relevant_page = any(
+            any(fragment in str(page.get("url") or "").lower() for fragment in ("gov.il", "mavat", "iplan"))
+            for page in (selected.pages or [])
+        )
+        if selected.provider == "browseros" and selected.connected and not has_relevant_page:
+            open_browseros_page(selected, MAVAT_URL, background=True)
+            time.sleep(0.35)
+        port = selected.cdp_port
 
         def started(message: str) -> None:
             self.recording_state = "recording"
@@ -485,12 +593,14 @@ class Runtime:
             port,
             on_log=self.log,
             on_step=self.recorded_step,
+            on_secret=self.recorded_secret,
+            on_target=self.follow_chrome_target,
             on_started=started,
             on_finished=finished,
         )
         self.recorder_thread = threading.Thread(target=self.recorder.run, daemon=True)
         self.recorder_thread.start()
-        return True, "מתחבר ל-Chrome לצורך הקלטה"
+        return True, "מתחבר לדפדפן האוטומציה לצורך הקלטה"
 
     def stop_recording(self) -> str:
         if self.recorder:
@@ -581,6 +691,10 @@ class Runtime:
                 self.current_step_target = str(active_step.get("target") or "")
             if state == "running":
                 self.run_message = f"מבצע שלב {step_number}: {name}"
+            elif state == "success" and self.run_state == "manual":
+                self.run_state = "running"
+                self.manual_message = ""
+                self.run_message = "האימות הושלם — האוטומציה ממשיכה"
 
         def run_error(details: dict[str, Any]) -> None:
             self.last_error = details
@@ -593,15 +707,17 @@ class Runtime:
             self.manual_message = ""
             self.log(message)
 
+        selected_browser, _ = self.browser_endpoint()
         self.runner = WorkflowRunner(
             workflow=workflow, records=records,
             username=profile.username, password=secrets.get(profile.id, ""),
             default_profile_id=profile.id, secrets_by_profile=secrets,
             browser_profile_dir=str(self.store.data["browser_profile_dir"]),
-            chrome_debug_port=int(self.store.data.get("chrome_debug_port", 9223)),
+            chrome_debug_port=selected_browser.cdp_port,
             callbacks=RunCallbacks(log=self.log, status=status, manual=manual, finished=finished, step=step_status, error=run_error),
             dry_run=dry_run,
             chrome_profile_directory=str(self.store.data.get("chrome_profile_directory") or "Default"),
+            browser_provider=selected_browser.provider,
         )
         self.log(f"התחלת {'בדיקה' if dry_run else 'הרצה'} עבור {len(records)} רשומות")
         self.runner_thread = threading.Thread(target=self.runner.run, daemon=True)
@@ -610,6 +726,243 @@ class Runtime:
 
 
 runtime = Runtime()
+
+
+def extension_origin() -> str:
+    return str(request.headers.get("Origin") or "").rstrip("/")
+
+
+def extension_request_id() -> str:
+    origin_id = extension_id_from_origin(extension_origin())
+    if origin_id:
+        return origin_id
+    claimed = str(
+        request.headers.get("X-Mavat-Extension-Id")
+        or request.args.get("extension_id")
+        or ""
+    ).strip().lower()
+    return claimed if re.fullmatch(r"[a-p]{32}", claimed) else ""
+
+
+def extension_identity_origin() -> str:
+    extension_id = extension_request_id()
+    return f"chrome-extension://{extension_id}" if extension_id else ""
+
+
+def extension_bearer_token() -> str:
+    header = str(request.headers.get("Authorization") or "")
+    if header.lower().startswith("bearer "):
+        return header[7:].strip()
+    return str(request.args.get("token") or "").strip()
+
+
+def extension_is_authenticated() -> bool:
+    return runtime.extension_bridge.authenticate(extension_identity_origin(), extension_bearer_token())
+
+
+def trusted_app_request() -> bool:
+    origin = extension_origin()
+    return not origin or origin in {
+        f"http://127.0.0.1:{WEB_PORT}",
+        "http://127.0.0.1:18474",
+        "http://localhost:18474",
+    }
+
+
+def sanitized_extension_step(step: dict[str, Any], index: int) -> dict[str, Any]:
+    secret = str(step.get("type") or "") == "fill_secret"
+    return {
+        "index": index,
+        "name": str(step.get("name") or f"שלב {index + 1}"),
+        "type": str(step.get("type") or "noop"),
+        "target": str(step.get("target") or ""),
+        "value": "" if secret else str(step.get("value") or ""),
+        "page_url": str(step.get("page_url") or ""),
+        "enabled": step.get("enabled", True) is not False,
+        "confidence": int(step.get("confidence") or 0),
+        "locator_strategy": str((step.get("locator") or {}).get("strategy") or "ידני"),
+        "recorded_at": str(step.get("recorded_at") or ""),
+        "has_screenshot": bool(step.get("screenshot")),
+        "secret_status": str(step.get("_secret_status") or ("saved" if secret and step.get("credential_profile_id") else "")),
+    }
+
+
+def extension_state() -> dict[str, Any]:
+    workflow = runtime.read_workflow()
+    steps = workflow.get("steps") or []
+    browser = runtime.chrome_cdp_status()
+    return {
+        "ok": True,
+        "revision": runtime.workflow_revision,
+        "automation": {
+            "id": runtime.active_automation_id(),
+            "name": str(runtime.active_automation().get("name") or workflow.get("name") or "אוטומציית מבא״ת"),
+        },
+        "recording": {
+            "state": runtime.recording_state,
+            "message": runtime.recording_message,
+        },
+        "browser": {
+            "connected": bool(browser.get("connected")),
+            "display_name": str(browser.get("display_name") or "BrowserOS"),
+            "target_title": runtime.chrome_preview_title,
+            "target_url": runtime.chrome_preview_url,
+        },
+        "steps": [sanitized_extension_step(dict(step), index) for index, step in enumerate(steps)],
+    }
+
+
+@app.after_request
+def extension_cors(response: Response) -> Response:
+    origin = extension_origin()
+    if request.path.startswith("/api/extension/") and extension_id_from_origin(origin):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, X-Mavat-Extension-Id"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Max-Age"] = "600"
+        response.headers.add("Vary", "Origin")
+    return response
+
+
+@app.get("/api/extension/ping")
+def api_extension_ping() -> Response:
+    if not extension_request_id():
+        return jsonify({"ok": False, "error": "מקור תוסף חסר"}), 403
+    return jsonify({
+        "ok": True,
+        "service": "mavat-automation",
+        "version": 1,
+        "paired": extension_is_authenticated(),
+        "requires_pairing": not extension_is_authenticated(),
+    })
+
+
+@app.post("/api/extension/pair")
+def api_extension_pair() -> Response:
+    origin = extension_identity_origin()
+    try:
+        token = runtime.extension_bridge.pair(
+            origin,
+            str((request.get_json(force=True) or {}).get("code") or ""),
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    runtime.log(f"תוסף ההקלטה חובר: {extension_request_id()[:8]}…")
+    return jsonify({"ok": True, "token": token, "state": extension_state()})
+
+
+@app.get("/api/extension/state")
+def api_extension_state() -> Response:
+    if not extension_is_authenticated():
+        return jsonify({"ok": False, "error": "נדרש חיבור מחדש לתוכנה"}), 401
+    return jsonify(extension_state())
+
+
+@app.post("/api/extension/recording/<action>")
+def api_extension_recording(action: str) -> Response:
+    if not extension_is_authenticated():
+        return jsonify({"ok": False, "error": "נדרש חיבור מחדש לתוכנה"}), 401
+    if action == "start":
+        ok, message = runtime.start_recording()
+        return jsonify({"ok": ok, "message": message, "state": extension_state()})
+    if action == "stop":
+        return jsonify({"ok": True, "message": runtime.stop_recording(), "state": extension_state()})
+    return jsonify({"ok": False, "error": "פעולת הקלטה לא מוכרת"}), 400
+
+
+@app.post("/api/extension/steps/undo")
+def api_extension_undo_step() -> Response:
+    if not extension_is_authenticated():
+        return jsonify({"ok": False, "error": "נדרש חיבור מחדש לתוכנה"}), 401
+    with runtime.lock:
+        workflow = runtime.read_workflow()
+        steps = workflow.get("steps") or []
+        if not steps:
+            return jsonify({"ok": False, "error": "אין פעולה אחרונה לביטול"}), 400
+        removed = steps.pop()
+        runtime.write_workflow(workflow)
+    runtime.log(f"בוטל השלב האחרון מהסיידבר: {removed.get('name', '')}")
+    return jsonify({"ok": True, "state": extension_state()})
+
+
+@app.post("/api/extension/steps/<int:index>/<action>")
+def api_extension_step_action(index: int, action: str) -> Response:
+    if not extension_is_authenticated():
+        return jsonify({"ok": False, "error": "נדרש חיבור מחדש לתוכנה"}), 401
+    payload = request.get_json(silent=True) or {}
+    with runtime.lock:
+        workflow = runtime.read_workflow()
+        steps = workflow.get("steps") or []
+        if index < 0 or index >= len(steps):
+            return jsonify({"ok": False, "error": "השלב לא נמצא"}), 404
+        if action == "delete":
+            del steps[index]
+        elif action == "duplicate":
+            duplicate = json.loads(json.dumps(steps[index], ensure_ascii=False))
+            duplicate["name"] = f"{duplicate.get('name', 'שלב')} (עותק)"
+            duplicate["recorded_at"] = datetime.now().isoformat(timespec="seconds")
+            steps.insert(index + 1, duplicate)
+        elif action in {"pause", "resume"}:
+            steps[index]["enabled"] = action == "resume"
+        elif action == "rename":
+            name = str(payload.get("name") or "").strip()[:180]
+            if not name:
+                return jsonify({"ok": False, "error": "יש להזין שם לשלב"}), 400
+            steps[index]["name"] = name
+        else:
+            return jsonify({"ok": False, "error": "פעולת שלב לא מוכרת"}), 400
+        runtime.write_workflow(workflow)
+    return jsonify({"ok": True, "state": extension_state()})
+
+
+@app.get("/api/extension/steps/<int:index>/thumbnail")
+def api_extension_step_thumbnail(index: int) -> Response:
+    if not extension_is_authenticated():
+        return jsonify({"ok": False, "error": "נדרש חיבור מחדש לתוכנה"}), 401
+    steps = runtime.read_workflow().get("steps") or []
+    if index < 0 or index >= len(steps):
+        return jsonify({"ok": False, "error": "השלב לא נמצא"}), 404
+    path = Path(str(steps[index].get("screenshot") or ""))
+    try:
+        resolved_path = path.resolve(strict=True)
+        screenshot_root = (runtime.store.base_dir / "screenshots").resolve(strict=True)
+    except OSError:
+        return jsonify({"ok": False, "error": "אין צילום לשלב זה"}), 404
+    if screenshot_root not in resolved_path.parents or not resolved_path.is_file():
+        return jsonify({"ok": False, "error": "נתיב הצילום אינו מורשה"}), 403
+    return send_file(resolved_path, mimetype="image/jpeg", max_age=0)
+
+
+@app.post("/api/extension/open-editor")
+def api_extension_open_editor() -> Response:
+    if not extension_is_authenticated():
+        return jsonify({"ok": False, "error": "נדרש חיבור מחדש לתוכנה"}), 401
+    runtime.publish_event("extension-open-editor", route="/recorder")
+    return jsonify({"ok": True})
+
+
+@app.get("/api/extension/admin/status")
+def api_extension_admin_status() -> Response:
+    if not trusted_app_request():
+        return jsonify({"ok": False, "error": "גישה נדחתה"}), 403
+    return jsonify({"ok": True, **runtime.extension_status(include_code=True)})
+
+
+@app.post("/api/extension/admin/pairing-code")
+def api_extension_admin_pairing_code() -> Response:
+    if not trusted_app_request():
+        return jsonify({"ok": False, "error": "גישה נדחתה"}), 403
+    runtime.extension_bridge.create_pairing_code()
+    return jsonify({"ok": True, **runtime.extension_status(include_code=True)})
+
+
+@app.post("/api/extension/admin/revoke")
+def api_extension_admin_revoke() -> Response:
+    if not trusted_app_request():
+        return jsonify({"ok": False, "error": "גישה נדחתה"}), 403
+    runtime.extension_bridge.revoke_all()
+    runtime.log("כל חיבורי תוסף ההקלטה בוטלו")
+    return jsonify({"ok": True, **runtime.extension_status(include_code=True)})
 
 
 def chrome_executable() -> str:
@@ -623,6 +976,13 @@ def chrome_executable() -> str:
         if candidate and Path(candidate).is_file():
             return candidate
     raise FileNotFoundError("Google Chrome לא נמצא")
+
+
+def browseros_executable() -> str:
+    candidate = Path(os.environ.get("LOCALAPPDATA", "")) / "BrowserOS/Application/chrome.exe"
+    if candidate.is_file():
+        return str(candidate)
+    raise FileNotFoundError("BrowserOS אינו מותקן במחשב")
 
 
 def chrome_user_data_dir() -> Path:
@@ -839,7 +1199,24 @@ def parse_logs() -> list[dict[str, Any]]:
 
 @app.get("/")
 def index() -> Response:
+    if FRONTEND_DIR.exists():
+        return redirect("/app/")
     return redirect("http://127.0.0.1:18474/")
+
+
+@app.get("/app/")
+@app.get("/app/<path:asset_path>")
+def packaged_frontend(asset_path: str = "") -> Response:
+    """Serve the packaged React SPA while keeping API and WebSocket same-origin."""
+    candidate = FRONTEND_DIR / asset_path
+    if asset_path and candidate.is_file():
+        return send_from_directory(FRONTEND_DIR, asset_path)
+    return send_from_directory(FRONTEND_DIR, "electron.index.html")
+
+
+@app.get("/favicon.ico")
+def packaged_favicon() -> Response:
+    return send_from_directory(FRONTEND_DIR, "favicon.ico")
 
 
 @app.get("/workflow")
@@ -1063,6 +1440,7 @@ def api_settings() -> Response:
             preview = load_records(data_path)[:5]
         except Exception as exc:
             error = str(exc)
+    browser_status = runtime.chrome_cdp_status()
     return jsonify({
         "data_file": data_path,
         "data_file_name": data_name or (Path(data_path).name if data_path else ""),
@@ -1070,7 +1448,27 @@ def api_settings() -> Response:
         "preview_count": len(preview),
         "error": error,
         "run": runtime.run_status(),
+        "browser_provider": str(runtime.store.data.get("browser_provider") or "auto"),
+        "browser": browser_status,
+        "extension_bridge": runtime.extension_status(include_code=True),
     })
+
+
+@app.post("/api/settings/browser-provider")
+def api_set_browser_provider() -> Response:
+    provider = str((request.get_json(force=True) or {}).get("provider") or "auto").lower()
+    if provider not in {"auto", "browseros", "chrome"}:
+        return jsonify({"ok": False, "error": "ספק הדפדפן אינו תקין"}), 400
+    runtime.store.data["browser_provider"] = provider
+    runtime.store.save()
+    runtime.chrome_preview_target_id = ""
+    runtime.chrome_preview_frame = b""
+    runtime.stop_chrome_preview_process()
+    status = runtime.chrome_cdp_status()
+    runtime.log(
+        f"ספק הדפדפן עודכן ל-{provider}; נבחר כעת {status.get('display_name')} בפורט {status.get('port')}"
+    )
+    return jsonify({"ok": True, "browser_provider": provider, "browser": status})
 
 
 @app.post("/api/settings/data-file")
@@ -1232,7 +1630,7 @@ def api_update_step(index: int) -> Response:
     if index < 0 or index >= len(steps):
         return jsonify({"ok": False, "error": "השלב לא נמצא"}), 404
     updates = request.get_json(force=True) or {}
-    allowed = {"name", "type", "scope", "target", "value", "timeout_seconds", "enabled", "credential_profile_id", "locator", "fallbacks", "page_url", "position", "confidence", "recorded_at", "screenshot"}
+    allowed = {"name", "type", "scope", "target", "value", "timeout_seconds", "enabled", "credential_profile_id", "locator", "fallbacks", "page_url", "position", "confidence", "recorded_at", "screenshot", "auto_continue", "resume_when"}
     steps[index].update({key: value for key, value in updates.items() if key in allowed})
     runtime.write_workflow(workflow)
     return jsonify({"ok": True})
@@ -1358,6 +1756,54 @@ def websocket_events(ws: Any) -> None:
                 runtime.event_listeners.remove(listener)
 
 
+@sock.route("/ws/extension")
+def websocket_extension(ws: Any) -> None:
+    """Authenticated, event-only channel for the BrowserOS side panel."""
+    if not extension_is_authenticated():
+        try:
+            ws.send(json.dumps({"type": "authentication-required"}, ensure_ascii=False))
+            ws.close()
+        except Exception:
+            pass
+        return
+    extension_id = extension_request_id()
+    listener: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=200)
+    with runtime.lock:
+        runtime.event_listeners.append(listener)
+        runtime.extension_live_connections[extension_id] = (
+            runtime.extension_live_connections.get(extension_id, 0) + 1
+        )
+    try:
+        ws.send(json.dumps({
+            "type": "connected",
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "revision": runtime.workflow_revision,
+            "recording_state": runtime.recording_state,
+            "transport": "raw-cdp-websocket",
+        }, ensure_ascii=False))
+        while True:
+            try:
+                event = listener.get(timeout=15)
+            except queue.Empty:
+                event = {
+                    "type": "heartbeat",
+                    "timestamp": datetime.now().isoformat(timespec="seconds"),
+                    "revision": runtime.workflow_revision,
+                }
+            ws.send(json.dumps(event, ensure_ascii=False))
+    except Exception:
+        pass
+    finally:
+        with runtime.lock:
+            if listener in runtime.event_listeners:
+                runtime.event_listeners.remove(listener)
+            remaining = runtime.extension_live_connections.get(extension_id, 1) - 1
+            if remaining > 0:
+                runtime.extension_live_connections[extension_id] = remaining
+            else:
+                runtime.extension_live_connections.pop(extension_id, None)
+
+
 @app.get("/api/chrome/profiles")
 def api_chrome_profiles() -> Response:
     source = chrome_profile_catalog(chrome_user_data_dir())
@@ -1418,6 +1864,26 @@ def api_chrome_repair() -> Response:
 @app.post("/api/chrome/open")
 def api_open_chrome() -> Response:
     try:
+        selected, _ = runtime.browser_endpoint()
+        if selected.provider == "browseros":
+            if not selected.connected:
+                subprocess.Popen([browseros_executable()], cwd=str(ROOT_DIR))
+                deadline = time.time() + 12
+                while time.time() < deadline:
+                    time.sleep(0.25)
+                    selected, _ = runtime.browser_endpoint()
+                    if selected.provider == "browseros" and selected.connected:
+                        break
+            if selected.connected:
+                open_browseros_page(selected, MAVAT_URL, background=True)
+                threading.Timer(0.5, runtime.ensure_chrome_preview).start()
+                runtime.log(
+                    f"BrowserOS חובר דרך MCP מקומי ו-CDP {selected.cdp_port}; דף מבא״ת נפתח ברקע"
+                )
+                return jsonify({"ok": True, "provider": "browseros", "port": selected.cdp_port})
+            if str(runtime.store.data.get("browser_provider") or "auto") == "browseros":
+                raise RuntimeError(selected.error or "BrowserOS לא התחבר בזמן")
+
         profile_dir = Path(runtime.store.data["browser_profile_dir"])
         profile_dir.mkdir(parents=True, exist_ok=True)
         port = int(runtime.store.data.get("chrome_debug_port", 9223))
@@ -1428,12 +1894,16 @@ def api_open_chrome() -> Response:
             f"--profile-directory={profile_directory}",
             f"--remote-debugging-port={port}",
             "--remote-allow-origins=*",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-session-crashed-bubble",
+            "--hide-crash-restore-bubble",
             "--new-window",
             MAVAT_URL,
         ], cwd=str(ROOT_DIR))
         threading.Timer(2.0, runtime.ensure_chrome_preview).start()
         runtime.log(f"Chrome נפתח בדף השירות של מבא״ת עם הפרופיל {profile_directory}")
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "provider": "chrome", "port": port})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 
@@ -1604,7 +2074,12 @@ def api_chrome_focus() -> Response:
         import ctypes
         from ctypes import wintypes
         user32 = ctypes.windll.user32
-        handles: list[int] = []
+        handles: list[tuple[int, str]] = []
+        page_titles = {
+            str(page.get("title") or "").strip()
+            for page in runtime.chrome_cdp_status().get("pages", [])
+            if str(page.get("title") or "").strip()
+        }
         callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
         def collect(hwnd: int, _lparam: int) -> bool:
@@ -1620,7 +2095,9 @@ def api_chrome_focus() -> Response:
                         path_size = wintypes.DWORD(len(path_buffer))
                         if ctypes.windll.kernel32.QueryFullProcessImageNameW(process, 0, path_buffer, ctypes.byref(path_size)):
                             if Path(path_buffer.value).name.casefold() == "chrome.exe":
-                                handles.append(hwnd)
+                                title_buffer = ctypes.create_unicode_buffer(1024)
+                                user32.GetWindowTextW(hwnd, title_buffer, 1024)
+                                handles.append((hwnd, title_buffer.value))
                     finally:
                         ctypes.windll.kernel32.CloseHandle(process)
             return True
@@ -1628,7 +2105,11 @@ def api_chrome_focus() -> Response:
         user32.EnumWindows(callback_type(collect), 0)
         if not handles:
             return jsonify({"ok": False, "error": "לא נמצא חלון Chrome פתוח"}), 404
-        hwnd = handles[0]
+        matching = [
+            item for item in handles
+            if any(page_title in item[1] for page_title in page_titles)
+        ]
+        hwnd = (matching or handles)[0][0]
         user32.ShowWindow(hwnd, 9)
         user32.SetForegroundWindow(hwnd)
         return jsonify({"ok": True})
@@ -1661,20 +2142,30 @@ def api_console() -> Response:
     runtime.ensure_chrome_console_monitor()
     log_path = runtime.log_path()
     application_log = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+    desktop_log_path = Path(os.environ.get("MAVAT_DESKTOP_LOG", ""))
+    desktop_log = (
+        desktop_log_path.read_text(encoding="utf-8", errors="replace")
+        if desktop_log_path.is_file()
+        else ""
+    )
     cdp = runtime.chrome_cdp_status()
     connection_lines = [
         "=== מצב חיבורים ===",
-        "ארכיטקטורה: Google Chrome חיצוני ייעודי דרך CDP (ללא iframe / webview / Chromium מוטמע)",
+        "ארכיטקטורה: BrowserOS מקומי מועדף עם MCP+CDP; Google Chrome ייעודי כגיבוי",
         "React: מחובר http://127.0.0.1:18474",
-        "Python: מחובר http://127.0.0.1:18473",
-        f"Chrome CDP: {'מחובר' if cdp['connected'] else 'מנותק'} http://127.0.0.1:{cdp['port']}",
-        f"Chrome: {cdp['browser'] or 'לא זמין'} | פרופיל: {cdp['profile_directory']}",
+        f"Python: מחובר http://127.0.0.1:{WEB_PORT}",
+        f"דפדפן פעיל: {cdp.get('display_name', 'דפדפן')} ({cdp.get('provider', 'לא ידוע')})",
+        f"CDP: {'מחובר' if cdp['connected'] else 'מנותק'} http://127.0.0.1:{cdp['port']}",
+        f"מנוע: {cdp['browser'] or 'לא זמין'} | פרופיל: {cdp['profile_directory']}",
         f"דפים פעילים: {len(cdp['pages'])} | אירועי Console: {len(runtime.chrome_console_events)}",
         "",
         "=== יומן מנוע Python ===",
         application_log or "היומן ריק.",
         "",
-        "=== Chrome Console (CDP) ===",
+        "=== יומן Electron ולחיצות UI ===",
+        desktop_log[-120000:] or "יומן Electron אינו זמין בהרצת דפדפן רגילה.",
+        "",
+        "=== Browser Console (CDP) ===",
     ]
     with runtime.lock:
         console_events = list(runtime.chrome_console_events)
@@ -1684,7 +2175,7 @@ def api_console() -> Response:
             for event in console_events
         )
     else:
-        connection_lines.append("טרם נקלטו הודעות Console מ-Chrome.")
+        connection_lines.append("טרם נקלטו הודעות Console מהדפדפן.")
     return jsonify({"content": "\n".join(connection_lines), "connections": cdp})
 
 

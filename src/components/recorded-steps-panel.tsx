@@ -23,7 +23,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { mavatApi, type ProfileStatus, type WorkflowStep } from "@/lib/mavat-api";
+import {
+  ensureMavatChromeReady,
+  mavatApi,
+  type ProfileStatus,
+  type WorkflowStep,
+} from "@/lib/mavat-api";
 
 function stepDetail(step: WorkflowStep) {
   if (step.type === "fill_secret") return "סיסמה מאובטחת — הערך אינו מוצג";
@@ -80,6 +85,7 @@ export function RecordedStepsPanel({
       return;
     }
     if (!confirm(`להריץ כעת ${selected.size} שלבים ב-Chrome?`)) return;
+    await ensureMavatChromeReady();
     await mavatApi("/api/run/start", {
       method: "POST",
       body: JSON.stringify({ profile_id: profileId, dry_run: false, step_indices: selectedIndices }),

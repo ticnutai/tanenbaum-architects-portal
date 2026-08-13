@@ -4,6 +4,12 @@ declare global {
     mavatDesktop?: {
       selectDataFile(): Promise<string>;
       copyText(text: string): Promise<boolean>;
+      navigateRoute(route: string): Promise<boolean>;
+      showWindow(): Promise<boolean>;
+      extension: {
+        getPath(): Promise<string>;
+        showFolder(): Promise<string>;
+      };
       automationEngine: {
         command<T = unknown>(command: string, payload?: Record<string, unknown>): Promise<T>;
         onEvent(listener: (event: AutomationEngineEvent) => void): () => void;
@@ -34,5 +40,6 @@ declare global {
     mode: string;
     profileDir: string;
     page: { title: string; url: string } | null;
+    layout?: { ok: boolean; error?: string };
   };
 }

@@ -19,6 +19,7 @@ import { ThemeSwitcher } from "@/components/theme-switcher";
 import { Toaster } from "@/components/ui/sonner";
 import { Button } from "@/components/ui/button";
 import { SystemConsoleDock } from "@/components/system-console-dock";
+import { FloatingRecordingControl } from "@/components/floating-recording-control";
 
 function NotFoundComponent() {
   return (
@@ -151,6 +152,23 @@ function RootComponent() {
     setSidebarAutoHide(window.localStorage.getItem("mavat.sidebar.autoHide") === "true");
   }, []);
 
+  useEffect(() => {
+    if (!window.mavatDesktop) return;
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const socket = new WebSocket(`${protocol}//${window.location.host}/ws/events`);
+    socket.onmessage = (message) => {
+      try {
+        const event = JSON.parse(message.data) as { type?: string; route?: string };
+        if (event.type !== "extension-open-editor") return;
+        void window.mavatDesktop?.showWindow();
+        void window.mavatDesktop?.navigateRoute(event.route || "/recorder");
+      } catch {
+        // Diagnostics from the backend must never interrupt the desktop UI.
+      }
+    };
+    return () => socket.close();
+  }, []);
+
   const changeSidebarAutoHide = (autoHide: boolean) => {
     setSidebarAutoHide(autoHide);
     window.localStorage.setItem("mavat.sidebar.autoHide", String(autoHide));
@@ -164,10 +182,19 @@ function RootComponent() {
     }
   };
 
-  const sidebarOpen = sidebarAutoHide
-    ? sidebarHovered || sidebarManualOpen
-    : sidebarPinnedOpen;
+  const sidebarOpen = sidebarAutoHide ? sidebarHovered || sidebarManualOpen : sidebarPinnedOpen;
   const goBack = () => {
+    // Chromium can wedge during an SPA unmount of the live log view in the
+    // packaged Electron build. Ask Electron's main process to replace the
+    // document so the navigation cannot be blocked by the old renderer.
+    if (pathname === "/logs") {
+      if (window.mavatDesktop?.navigateRoute) {
+        void window.mavatDesktop.navigateRoute("/workflow");
+      } else {
+        window.location.assign("/workflow");
+      }
+      return;
+    }
     if (router.history.canGoBack()) {
       router.history.back();
       return;
@@ -240,6 +267,7 @@ function RootComponent() {
           </div>
         </div>
       </SidebarProvider>
+      <FloatingRecordingControl />
       <SystemConsoleDock />
       <Toaster />
     </QueryClientProvider>
@@ -249,6 +277,7 @@ function RootComponent() {
 function SystemStatus() {
   const [pythonConnected, setPythonConnected] = useState(false);
   const [cdpConnected, setCdpConnected] = useState(false);
+  const [browserName, setBrowserName] = useState("דפדפן");
   useEffect(() => {
     const check = async () => {
       try {
@@ -257,8 +286,11 @@ function SystemStatus() {
           fetch("/api/chrome/status"),
         ]);
         setPythonConnected(python.ok);
-        const chromeStatus = chrome.ok ? ((await chrome.json()) as { connected?: boolean }) : {};
+        const chromeStatus = chrome.ok
+          ? ((await chrome.json()) as { connected?: boolean; display_name?: string })
+          : {};
         setCdpConnected(Boolean(chromeStatus.connected));
+        setBrowserName(chromeStatus.display_name || "דפדפן");
       } catch {
         setPythonConnected(false);
         setCdpConnected(false);
@@ -280,7 +312,7 @@ function SystemStatus() {
         <i
           className={`size-2 rounded-full ${cdpConnected ? "bg-emerald-500" : "bg-destructive"}`}
         />
-        {cdpConnected ? "Chrome CDP מחובר" : "Chrome CDP מנותק"}
+        {cdpConnected ? `${browserName} מחובר` : `${browserName} מנותק`}
       </span>
     </span>
   );

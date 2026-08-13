@@ -79,6 +79,22 @@ export type SettingsData = {
   preview: Record<string, unknown>[];
   error: string;
   run: RunState;
+  browser_provider: "auto" | "browseros" | "chrome";
+  browser: {
+    connected: boolean;
+    provider: "browseros" | "chrome";
+    display_name: string;
+    port: number;
+    mcp_url?: string;
+    fallback_available?: boolean;
+  };
+  extension_bridge: {
+    paired_count: number;
+    live_count: number;
+    pairing_active: boolean;
+    pairing_code?: string;
+    pairing_expires_at?: string;
+  };
 };
 export type LogEvent = { id: number; timestamp: string; message: string; status: string };
 export type LogsData = {
@@ -104,4 +120,24 @@ export async function mavatApi<T>(url: string, init: RequestInit = {}): Promise<
 export async function copyMavatText(text: string) {
   if (window.mavatDesktop?.copyText) return window.mavatDesktop.copyText(text);
   return navigator.clipboard.writeText(text);
+}
+
+export async function ensureMavatChromeReady(options: { focus?: boolean } = {}) {
+  // Background runs must not steal focus. BrowserOS is preferred when healthy;
+  // the dedicated Chrome remains a transparent fallback.
+  const focus = options.focus === true;
+  let status = await mavatApi<{ connected: boolean }>("/api/chrome/status");
+  if (!status.connected) {
+    await mavatApi("/api/chrome/open", { method: "POST" });
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      status = await mavatApi<{ connected: boolean }>("/api/chrome/status");
+      if (status.connected) break;
+    }
+    if (!status.connected) throw new Error("הדפדפן נפתח אך חיבור האוטומציה לא הושלם בזמן");
+  }
+  if (focus) {
+    await mavatApi("/api/chrome/focus", { method: "POST" }).catch(() => undefined);
+  }
+  return status;
 }

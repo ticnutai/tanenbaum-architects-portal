@@ -31,7 +31,12 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { mavatApi, type WorkflowData, type WorkflowStep } from "@/lib/mavat-api";
+import {
+  ensureMavatChromeReady,
+  mavatApi,
+  type WorkflowData,
+  type WorkflowStep,
+} from "@/lib/mavat-api";
 
 export const Route = createFileRoute("/workflow")({ component: WorkflowPage });
 const actions = [
@@ -166,6 +171,7 @@ function WorkflowPage() {
     }
     if (!confirm(`להריץ כעת ${indices.length} שלבים ב-Chrome?`)) return;
     try {
+      await ensureMavatChromeReady();
       await mavatApi("/api/run/start", {
         method: "POST",
         body: JSON.stringify({ profile_id: profileId, dry_run: false, step_indices: indices }),

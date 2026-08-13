@@ -1,0 +1,45 @@
+appId: il.co.tanenbaum.mavat-automation
+productName: Mavat Automation
+artifactName: Mavat-Automation-Setup-${version}.${ext}
+asar: true
+directories:
+  output: release
+files:
+  - electron/**/*
+  - automation-engine/**/*
+  - desktop/**/*
+  - package.json
+extraResources:
+  - from: dist-electron
+    to: frontend
+    filter:
+      - "**/*"
+  - from: .artifact/python-backend/mavat-backend
+    to: python-backend
+    filter:
+      - "**/*"
+  - from: browser-extension/.output/chrome-mv3
+    to: browser-extension
+    filter:
+      - "**/*"
+  - from: .
+    to: python-app
+    filter:
+      - web_app.py
+      - workflow.json
+      - mavat_app/**/*
+      - web/**/*
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: public/favicon.ico
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Mavat Automation
+  deleteAppDataOnUninstall: false

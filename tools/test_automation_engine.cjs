@@ -11,6 +11,7 @@ const worker = fork(path.join(__dirname, "..", "automation-engine", "worker.cjs"
     MAVAT_AUTOMATION_PROFILE_DIR: profileDir,
     // Never attach a test run to the user's live Chrome on port 9223.
     MAVAT_CHROME_CDP_PORT: "19223",
+    MAVAT_BROWSER_PROVIDER: "chrome",
   },
 });
 const timeout = setTimeout(() => {

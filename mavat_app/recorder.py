@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
+from urllib.parse import urlparse
 from typing import Any, Callable
 
 import websocket
@@ -33,12 +35,13 @@ RECORDER_SCRIPT = r"""
       const label = document.querySelector(`label[for="${CSS.escape(id)}"]`);
       if (label) return (label.innerText || label.textContent || "").trim();
     }
-    return (el.getAttribute("placeholder") || el.getAttribute("name") || id || "שדה ללא תווית").trim();
+    return (el.getAttribute("placeholder") || el.getAttribute("name") || id || "").trim();
   };
 
   const visibleName = (el) => (
     el.getAttribute("aria-label") ||
     el.getAttribute("title") ||
+    el.getAttribute("alt") ||
     el.innerText ||
     el.textContent ||
     (el.tagName === "INPUT" ? el.value : "") ||
@@ -63,30 +66,79 @@ RECORDER_SCRIPT = r"""
     if (el.name && !/\d{5,}/.test(el.name)) add("css", `${el.tagName.toLowerCase()}[name="${CSS.escape(el.name)}"]`, 84);
     if (text) add("text", text, 78);
     const rect = el.getBoundingClientRect();
-    return {text,label,placeholder,role,selectors:selectors.sort((a,b)=>b.score-a.score),
+    const overlay = Boolean(el.closest(
+      '[role="dialog"], [aria-modal="true"], [class*="cookie" i], [id*="cookie" i], [class*="banner" i], [id*="banner" i], [class*="consent" i], [id*="consent" i]'
+    ));
+    return {text,label,placeholder,role,overlay,selectors:selectors.sort((a,b)=>b.score-a.score),
       position:{x_ratio:(rect.left+rect.width/2)/innerWidth,y_ratio:(rect.top+rect.height/2)/innerHeight}};
   };
 
+  const fieldTimers = new WeakMap();
+  const fieldPayload = (el) => {
+    const fieldType = (el.getAttribute("type") || el.tagName.toLowerCase()).toLowerCase();
+    const secret = fieldType === "password";
+    const isSelect = el instanceof HTMLSelectElement;
+    const selected = isSelect && el.selectedIndex >= 0 ? el.options[el.selectedIndex] : null;
+    return {
+      kind: isSelect ? "select" : (fieldType === "checkbox" || fieldType === "radio" ? "toggle" : "fill"),
+      label: labelFor(el),
+      secret,
+      value: secret ? "" : (selected ? (selected.text || selected.value) : (el.value || "")),
+      secret_value: secret ? (el.value || "") : "",
+      checked: "checked" in el ? Boolean(el.checked) : undefined,
+      ...descriptorFor(el),
+      url: location.href,
+      at: Date.now()
+    };
+  };
+  const emitField = (el) => {
+    const timer = fieldTimers.get(el);
+    if (timer) clearTimeout(timer);
+    fieldTimers.delete(el);
+    emit(fieldPayload(el));
+  };
+  const scheduleField = (el) => {
+    const previous = fieldTimers.get(el);
+    if (previous) clearTimeout(previous);
+    fieldTimers.set(el, setTimeout(() => emitField(el), 450));
+  };
+
   document.addEventListener("click", (event) => {
-    const el = event.target.closest("button, a, [role='button'], input[type='button'], input[type='submit']");
+    const el = event.target.closest(
+      "button, a, [role='button'], [role='menuitem'], [role='tab'], input[type='button'], input[type='submit'], input[type='image'], [onclick], [tabindex]"
+    );
     if (!el) return;
     const role = el.getAttribute("role") || (el.tagName === "A" ? "link" : "button");
-    const name = visibleName(el);
+    const name = visibleName(el) || labelFor(el) || "רכיב ללא תווית";
     if (!name) return;
     emit({kind: "click", role, name, ...descriptorFor(el), url: location.href, at: Date.now()});
+  }, true);
+
+  document.addEventListener("input", (event) => {
+    const el = event.target;
+    if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return;
+    scheduleField(el);
   }, true);
 
   document.addEventListener("change", (event) => {
     const el = event.target;
     if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement)) return;
-    const fieldType = (el.getAttribute("type") || el.tagName.toLowerCase()).toLowerCase();
-    emit({
-      kind: el instanceof HTMLSelectElement ? "select" : "fill",
-      label: labelFor(el),
-      secret: fieldType === "password",
-      ...descriptorFor(el),
-      url: location.href,
-      at: Date.now()
+    emitField(el);
+  }, true);
+
+  document.addEventListener("blur", (event) => {
+    const el = event.target;
+    if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return;
+    if (fieldTimers.has(el) || (el.getAttribute("type") || "").toLowerCase() === "password") emitField(el);
+  }, true);
+
+  document.addEventListener("submit", (event) => {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement)) return;
+    form.querySelectorAll("input, textarea, select").forEach((el) => {
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) {
+        if (el.value || ("checked" in el && el.checked)) emitField(el);
+      }
     });
   }, true);
 })();
@@ -104,10 +156,14 @@ class BrowserRecorder:
         on_started: Callable[[str], None],
         on_finished: Callable[[str], None],
         target_fragments: tuple[str, ...] | None = None,
+        on_secret: Callable[[dict[str, Any], str], None] | None = None,
+        on_target: Callable[[str, str, str], None] | None = None,
     ) -> None:
         self.debug_port = debug_port
         self.on_log = on_log
         self.on_step = on_step
+        self.on_secret = on_secret
+        self.on_target = on_target
         self.on_started = on_started
         self.on_finished = on_finished
         self.target_fragments = target_fragments or (
@@ -135,14 +191,21 @@ class BrowserRecorder:
             "position": position, "confidence": int(preferred.get("score") or 45),
         }
         if kind == "click":
+            name = str(event.get("name") or "")
+            optional_overlay = bool(event.get("overlay")) and bool(re.search(
+                r"(?:עוגי|קבל(?:ו)? הכל|אני מסכים|הבנתי|לא תודה|סגור|cookie|accept all|allow all|agree|got it|no thanks|dismiss|close)",
+                name,
+                flags=re.IGNORECASE,
+            ))
             return {
-                "name": f"לחיצה: {event.get('name', '')}",
+                "name": f"לחיצה: {name}",
                 "type": "smart_click",
                 "scope": "once",
                 "target": event.get("name", ""),
                 "value": "",
                 "timeout_seconds": 30,
                 "enabled": True,
+                "optional": optional_overlay,
                 **common,
             }
         if kind == "fill":
@@ -152,7 +215,18 @@ class BrowserRecorder:
                 "type": "fill_secret" if secret else "smart_fill",
                 "scope": "once",
                 "target": event.get("label", ""),
-                "value": "" if secret else "{TODO}",
+                "value": "" if secret else str(event.get("value") or ""),
+                "timeout_seconds": 30,
+                "enabled": True,
+                **common,
+            }
+        if kind == "toggle":
+            return {
+                "name": f"שינוי אפשרות: {event.get('label', '')}",
+                "type": "smart_click",
+                "scope": "once",
+                "target": event.get("label", ""),
+                "value": "",
                 "timeout_seconds": 30,
                 "enabled": True,
                 **common,
@@ -162,7 +236,7 @@ class BrowserRecorder:
             "type": "select_option",
             "scope": "once",
             "target": event.get("label", ""),
-            "value": "{TODO}",
+            "value": str(event.get("value") or ""),
             "timeout_seconds": 30,
             "enabled": True,
             **common,
@@ -170,16 +244,40 @@ class BrowserRecorder:
 
     def run(self) -> None:
         workers: dict[str, tuple[threading.Thread, threading.Event]] = {}
+        known_targets: set[str] = set()
 
         def relevant(target: dict[str, Any]) -> bool:
             url = str(target.get("url") or "").lower()
             return any(fragment in url for fragment in self.target_fragments)
 
-        def observe(target: dict[str, Any], worker_stop: threading.Event) -> None:
+        def observe(
+            target: dict[str, Any], worker_stop: threading.Event, opened_during_recording: bool
+        ) -> None:
             target_id = str(target.get("id") or "")
             contexts: set[int] = set()
             connection: CdpConnection | None = None
             binding_ready = False
+            current_main_url = str(target.get("url") or "")
+
+            def announce_target(url: str = "", title: str = "") -> None:
+                if self.on_target:
+                    self.on_target(target_id, url or current_main_url, title or str(target.get("title") or ""))
+
+            def navigation_step(url: str, title: str = "") -> dict[str, Any]:
+                parsed = urlparse(url)
+                page_name = title.strip() or parsed.netloc or url
+                return {
+                    "name": f"מעבר לדף: {page_name}"[:180],
+                    "type": "goto",
+                    "scope": "once",
+                    "target": "",
+                    "value": url,
+                    "page_url": url,
+                    "timeout_seconds": 30,
+                    "enabled": True,
+                    "confidence": 100,
+                    "_target_id": target_id,
+                }
 
             def inject(context_id: int) -> None:
                 if not connection or connection.closed:
@@ -197,9 +295,12 @@ class BrowserRecorder:
                     contexts.discard(context_id)
 
             def handle(event: CdpEvent) -> None:
-                nonlocal binding_ready
+                nonlocal binding_ready, current_main_url
                 if event.method == "Runtime.executionContextCreated":
-                    context_id = int((event.params.get("context") or {}).get("id") or 0)
+                    context = event.params.get("context") or {}
+                    if not bool((context.get("auxData") or {}).get("isDefault")):
+                        return
+                    context_id = int(context.get("id") or 0)
                     if context_id:
                         contexts.add(context_id)
                         if binding_ready:
@@ -208,6 +309,41 @@ class BrowserRecorder:
                 if event.method == "Runtime.executionContextDestroyed":
                     contexts.discard(int(event.params.get("executionContextId") or 0))
                     return
+                if event.method == "Page.frameNavigated":
+                    frame = event.params.get("frame") or {}
+                    if frame.get("parentId"):
+                        return
+                    url = str(frame.get("url") or "")
+                    if not url.startswith(("http://", "https://")):
+                        return
+                    previous_url = current_main_url
+                    changed = url != current_main_url
+                    current_main_url = url
+                    announce_target(url)
+                    if changed and relevant({"url": url}):
+                        if "login.gov.il" in previous_url.lower() and "mavat" in url.lower():
+                            self.on_step({
+                                "name": "אימות מאובטח והמשך אוטומטי למבא״ת",
+                                "type": "manual",
+                                "scope": "once",
+                                "target": "השלם סיסמה, Passkey או אימות ממשלתי מאובטח",
+                                "value": "השלם את האימות המאובטח בדפדפן; האוטומציה תמשיך לבד לאחר הצלחת הכניסה",
+                                "page_url": previous_url,
+                                "timeout_seconds": 300,
+                                "enabled": True,
+                                "auto_continue": True,
+                                "resume_when": {
+                                    "url_not_contains": "login.gov.il",
+                                    "url_contains_any": [
+                                        "plan.mavat.moin.gov.il",
+                                        "mavat.moin.gov.il",
+                                    ],
+                                },
+                                "confidence": 100,
+                                "_target_id": target_id,
+                            })
+                        self.on_step(navigation_step(url))
+                    return
                 if event.method != "Runtime.bindingCalled":
                     return
                 if event.params.get("name") != "__mavatRecordAction":
@@ -215,7 +351,12 @@ class BrowserRecorder:
                 try:
                     raw_event = json.loads(str(event.params.get("payload") or "{}"))
                     step = self._to_step(raw_event)
-                    self.on_step(step)
+                    step["_target_id"] = target_id
+                    secret_value = str(raw_event.get("secret_value") or "")
+                    if bool(raw_event.get("secret")) and secret_value and self.on_secret:
+                        self.on_secret(step, secret_value)
+                    else:
+                        self.on_step(step)
                 except Exception as exc:
                     self.on_log(f"אירוע CDP לא נקלט: {exc}")
 
@@ -230,6 +371,9 @@ class BrowserRecorder:
                 binding_ready = True
                 for context_id in list(contexts):
                     inject(context_id)
+                announce_target()
+                if opened_during_recording and current_main_url.startswith(("http://", "https://")):
+                    self.on_step(navigation_step(current_main_url, str(target.get("title") or "")))
                 self.on_log(
                     f"צופה Raw CDP מחובר ברקע: {target.get('title') or target.get('url')}"
                 )
@@ -249,19 +393,24 @@ class BrowserRecorder:
             deadline = time.time() + 6
             started = False
             while not self.stop_event.is_set():
-                targets = [target for target in page_targets(self.debug_port) if relevant(target)]
-                active_ids = {str(target.get("id") or "") for target in targets}
+                all_targets = page_targets(self.debug_port)
+                available_ids = {str(target.get("id") or "") for target in all_targets}
                 for target_id, (thread, worker_stop) in list(workers.items()):
-                    if target_id not in active_ids or not thread.is_alive():
+                    if target_id not in available_ids or not thread.is_alive():
                         worker_stop.set()
                         workers.pop(target_id, None)
+                targets = [target for target in all_targets if relevant(target)]
                 for target in targets:
                     target_id = str(target.get("id") or "")
                     if not target_id or target_id in workers:
                         continue
+                    opened_during_recording = started and target_id not in known_targets
+                    known_targets.add(target_id)
                     worker_stop = threading.Event()
                     thread = threading.Thread(
-                        target=observe, args=(target, worker_stop), daemon=True
+                        target=observe,
+                        args=(target, worker_stop, opened_during_recording),
+                        daemon=True,
                     )
                     workers[target_id] = (thread, worker_stop)
                     thread.start()
@@ -269,7 +418,7 @@ class BrowserRecorder:
                     started = True
                     self.on_started("מקליט עכשיו · Raw CDP ברקע")
                     self.on_log(
-                        "הקלטת Raw CDP התחילה ברקע. ערכי שדות אינם נשמרים."
+                        "הקלטת Raw CDP התחילה ברקע. ערכים רגילים נשמרים בשלבים; סיסמאות נשלחות רק לכספת Windows."
                     )
                 if not started and time.time() > deadline:
                     raise RuntimeError(

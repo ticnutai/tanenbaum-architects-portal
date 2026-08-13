@@ -55,6 +55,10 @@ class ConfigStore:
             "chrome_profile_directory": "Default",
             "chrome_account_email": "",
             "chrome_debug_port": 9223,
+            "browser_provider": "auto",
+            "browseros_cdp_port": 0,
+            "browseros_mcp_url": "",
+            "extension_bridge_tokens": [],
         }
         if not self.config_path.exists():
             return defaults
@@ -63,6 +67,16 @@ class ConfigStore:
             defaults.update(loaded if isinstance(loaded, dict) else {})
         except (OSError, json.JSONDecodeError):
             pass
+        if os.environ.get("MAVAT_BROWSER_PROFILE_DIR"):
+            defaults["browser_profile_dir"] = os.environ["MAVAT_BROWSER_PROFILE_DIR"]
+        if os.environ.get("MAVAT_CHROME_CDP_PORT"):
+            defaults["chrome_debug_port"] = int(os.environ["MAVAT_CHROME_CDP_PORT"])
+        if os.environ.get("MAVAT_BROWSER_PROVIDER"):
+            defaults["browser_provider"] = os.environ["MAVAT_BROWSER_PROVIDER"]
+        if os.environ.get("MAVAT_BROWSEROS_CDP_PORT"):
+            defaults["browseros_cdp_port"] = int(os.environ["MAVAT_BROWSEROS_CDP_PORT"])
+        if os.environ.get("MAVAT_BROWSEROS_MCP_URL"):
+            defaults["browseros_mcp_url"] = os.environ["MAVAT_BROWSEROS_MCP_URL"]
         return defaults
 
     def save(self) -> None:

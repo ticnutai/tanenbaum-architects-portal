@@ -7,10 +7,15 @@ const { spawn } = require("child_process");
 const ROOT = path.resolve(__dirname, "..");
 const PROFILE_DIR = process.env.MAVAT_AUTOMATION_PROFILE_DIR || path.join(ROOT, ".runtime", "chrome", "mavat");
 const ARTIFACTS_DIR = path.join(ROOT, "run_logs", "playwright");
-const CDP_PORT = Number(process.env.MAVAT_CHROME_CDP_PORT || 9223);
+const CHROME_CDP_PORT = Number(process.env.MAVAT_CHROME_CDP_PORT || 9223);
+const BROWSER_PROVIDER = String(process.env.MAVAT_BROWSER_PROVIDER || "auto").toLowerCase();
 // Chrome מפרסם את WebSocket של DevTools תחת localhost. שימוש באותה כתובת
 // מונע socket hang up בגרסאות Chrome חדשות שבהן IPv4/IPv6 נפתרים בנפרד.
-const CDP_URL = `http://localhost:${CDP_PORT}`;
+let activeCdpPort = CHROME_CDP_PORT;
+let activeCdpUrl = `http://localhost:${activeCdpPort}`;
+let activeProvider = "chrome";
+let activeMcpUrl = "";
+const DEFAULT_START_URL = "https://www.gov.il/he/service/mvat";
 
 let browser = null;
 let context = null;
@@ -19,9 +24,15 @@ let chromeProcess = null;
 let profileSetupProcess = null;
 let runController = null;
 let manualResolver = null;
+let maintainBrowserConnection = false;
+let reconnectTimer = null;
+let shuttingDown = false;
+let lastStartUrl = DEFAULT_START_URL;
+let ownsBrowserProcess = false;
 
 function send(message) {
-  if (process.send) process.send(message);
+  if (process.parentPort) process.parentPort.postMessage(message);
+  else if (process.send) process.send(message);
   else process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
@@ -40,8 +51,10 @@ function engineStatus() {
     profilePreparing: Boolean(profileSetupProcess),
     running: Boolean(runController),
     page: activePage ? { title: "", url: activePage.url() } : null,
-    profileDir: PROFILE_DIR,
-    mode: "google-chrome-cdp",
+    profileDir: activeProvider === "browseros" ? "BrowserOS" : PROFILE_DIR,
+    mode: activeProvider === "browseros" ? "browseros-mcp-cdp" : "google-chrome-cdp",
+    provider: activeProvider,
+    cdpPort: activeCdpPort,
   };
 }
 
@@ -66,11 +79,75 @@ function findChrome() {
   return executable;
 }
 
-async function waitForCdp(timeoutMs = 15000) {
+function browserOsSettings() {
+  const configPath = process.env.MAVAT_BROWSEROS_CONFIG || (
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "BrowserOS", "User Data", ".browseros", "config.json")
+  );
+  let cdpPort = Number(process.env.MAVAT_BROWSEROS_CDP_PORT || 0);
+  let serverPort = 0;
+  if (configPath && fs.existsSync(configPath)) {
+    try {
+      const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+      cdpPort ||= Number(config?.ports?.cdp || 0);
+      serverPort = Number(config?.ports?.server || 0);
+    } catch { /* invalid BrowserOS config falls back safely to Chrome */ }
+  }
+  return { cdpPort: cdpPort || 9101, serverPort: serverPort || 9200 };
+}
+
+async function browserOsHealthy() {
+  const settings = browserOsSettings();
+  try {
+    const [health, cdp] = await Promise.all([
+      fetch(`http://127.0.0.1:${settings.serverPort}/health`),
+      fetch(`http://127.0.0.1:${settings.cdpPort}/json/version`),
+    ]);
+    if (!health.ok || !cdp.ok) return null;
+    const state = await health.json();
+    return state.status === "ok" && state.cdpConnected ? settings : null;
+  } catch { return null; }
+}
+
+async function selectBrowserEndpoint() {
+  if (BROWSER_PROVIDER !== "chrome") {
+    const browserOs = await browserOsHealthy();
+    if (browserOs) {
+      activeProvider = "browseros";
+      activeCdpPort = browserOs.cdpPort;
+      activeCdpUrl = `http://localhost:${activeCdpPort}`;
+      activeMcpUrl = `http://127.0.0.1:${browserOs.serverPort}/mcp`;
+      return true;
+    }
+    if (BROWSER_PROVIDER === "browseros") {
+      throw new Error("BrowserOS אינו מחובר. פתח את BrowserOS ונסה שוב");
+    }
+  }
+  activeProvider = "chrome";
+  activeCdpPort = CHROME_CDP_PORT;
+  activeCdpUrl = `http://localhost:${activeCdpPort}`;
+  activeMcpUrl = "";
+  return false;
+}
+
+async function openBrowserOsPage(url) {
+  const response = await fetch(activeMcpUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+    body: JSON.stringify({
+      jsonrpc: "2.0", id: 1, method: "tools/call",
+      params: { name: "tabs", arguments: { action: "new", url, background: true, hidden: false } },
+    }),
+  });
+  if (!response.ok) throw new Error(`BrowserOS MCP החזיר ${response.status}`);
+  const data = await response.json();
+  if (data.error || data.result?.isError) throw new Error(data.error?.message || "פתיחת לשונית BrowserOS נכשלה");
+}
+
+async function waitForCdp(timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${CDP_URL}/json/version`);
+      const response = await fetch(`${activeCdpUrl}/json/version`);
       if (response.ok) return;
     } catch { /* Chrome עדיין עולה */ }
     await new Promise((resolve) => setTimeout(resolve, 200));
@@ -82,44 +159,88 @@ async function launchAndConnectChrome() {
   if (profileSetupProcess) {
     throw new Error("חלון הכנת הפרופיל עדיין פתוח. יש להשלים את הכניסה, לסגור את Chrome ואז לפתוח את דפדפן האוטומציה");
   }
+  const usingBrowserOs = await selectBrowserEndpoint();
+  if (usingBrowserOs) {
+    await waitForCdp(5000);
+    browser = await chromium.connectOverCDP(activeCdpUrl);
+    ownsBrowserProcess = false;
+    context = browser.contexts()[0];
+    if (!context) throw new Error("BrowserOS מחובר אך לא נמצא בו פרופיל פעיל");
+    return;
+  }
   fs.mkdirSync(PROFILE_DIR, { recursive: true });
   const executable = findChrome();
   chromeProcess = spawn(executable, [
-    `--remote-debugging-port=${CDP_PORT}`,
+    `--remote-debugging-port=${activeCdpPort}`,
     "--remote-debugging-address=127.0.0.1",
     `--user-data-dir=${PROFILE_DIR}`,
+    "--profile-directory=Default",
+    "--remote-allow-origins=*",
     "--start-maximized",
     "--lang=he-IL",
     "--no-first-run",
     "--no-default-browser-check",
+    "--disable-session-crashed-bubble",
+    "--hide-crash-restore-bubble",
     "about:blank",
   ], { detached: false, windowsHide: false, stdio: "ignore" });
+  ownsBrowserProcess = true;
   chromeProcess.once("exit", () => {
     chromeProcess = null;
   });
   await waitForCdp();
-  browser = await chromium.connectOverCDP(CDP_URL);
+  browser = await chromium.connectOverCDP(activeCdpUrl);
   browser.on("disconnected", () => {
     browser = null;
     context = null;
     activePage = null;
     event("browser-closed");
     void publishStatus();
+    scheduleReconnect();
   });
   context = browser.contexts()[0];
   if (!context) throw new Error("Chrome נפתח אך לא נמצא בו פרופיל פעיל");
 }
 
+function scheduleReconnect(delayMs = 2000) {
+  if (!maintainBrowserConnection || profileSetupProcess || shuttingDown || reconnectTimer) return;
+  reconnectTimer = setTimeout(async () => {
+    reconnectTimer = null;
+    if (!maintainBrowserConnection || profileSetupProcess || shuttingDown || context) return;
+    try {
+      await ensureBrowser(lastStartUrl);
+      event("browser-reconnected", { profileDir: PROFILE_DIR, url: lastStartUrl });
+    } catch (error) {
+      event("browser-reconnect-failed", { error: error.message || String(error) });
+      scheduleReconnect(4000);
+    }
+  }, delayMs);
+}
+
 async function prepareChromeProfile() {
-  if (browser) await browser.close();
+  maintainBrowserConnection = false;
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  if (browser && ownsBrowserProcess) await browser.close();
+  browser = null;
+  context = null;
+  activePage = null;
+  activeProvider = "chrome";
+  activeCdpPort = CHROME_CDP_PORT;
+  activeCdpUrl = `http://localhost:${activeCdpPort}`;
+  activeMcpUrl = "";
+  ownsBrowserProcess = false;
   if (profileSetupProcess) throw new Error("חלון הכנת הפרופיל כבר פתוח");
   fs.mkdirSync(PROFILE_DIR, { recursive: true });
   profileSetupProcess = spawn(findChrome(), [
     `--user-data-dir=${PROFILE_DIR}`,
+    "--profile-directory=Default",
     "--start-maximized",
     "--lang=he-IL",
     "--no-first-run",
     "--no-default-browser-check",
+    "--disable-session-crashed-bubble",
+    "--hide-crash-restore-bubble",
     "--new-window",
     "https://accounts.google.com/",
   ], { detached: false, windowsHide: false, stdio: "ignore" });
@@ -147,14 +268,32 @@ function attachPage(page) {
 }
 
 async function ensureBrowser(startUrl = "") {
+  if (startUrl) lastStartUrl = startUrl;
   if (!context) {
     await launchAndConnectChrome();
     context.on("page", attachPage);
     const existing = context.pages();
     attachPage(existing.at(-1) || await context.newPage());
-    event("browser-opened", { profileDir: PROFILE_DIR, mode: "google-chrome-cdp" });
+    event("browser-opened", {
+      profileDir: activeProvider === "browseros" ? "BrowserOS" : PROFILE_DIR,
+      mode: activeProvider === "browseros" ? "browseros-mcp-cdp" : "google-chrome-cdp",
+      provider: activeProvider,
+      cdpPort: activeCdpPort,
+    });
   }
-  if (startUrl && activePage && activePage.url() !== startUrl) {
+  if (startUrl && activeProvider === "browseros") {
+    let matching = context.pages().find((page) => page.url() === startUrl);
+    if (!matching) {
+      await openBrowserOsPage(startUrl);
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline && !matching) {
+        matching = context.pages().find((page) => page.url() === startUrl);
+        if (!matching) await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    if (matching) attachPage(matching);
+  }
+  if (startUrl && activeProvider !== "browseros" && activePage && activePage.url() !== startUrl) {
     await activePage.goto(startUrl, { waitUntil: "domcontentloaded" });
   }
   await publishStatus();
@@ -181,14 +320,52 @@ function locatorFrom(page, candidate, record) {
   }
 }
 
+function normalizedPageUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    url.hash = "";
+    url.protocol = url.protocol.toLowerCase();
+    url.hostname = url.hostname.toLowerCase();
+    if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, "");
+    return url.toString();
+  } catch {
+    return String(value || "").replace(/\/+$/, "");
+  }
+}
+
+async function preparePageForStep(page, step) {
+  const expectedUrl = String(step.page_url || "").trim();
+  if (!/^https?:\/\//i.test(expectedUrl)) return;
+  const expected = normalizedPageUrl(expectedUrl);
+  const frameMatch = page.frames().some((frame) =>
+    frame !== page.mainFrame() && normalizedPageUrl(frame.url()) === expected
+  );
+  if (normalizedPageUrl(page.url()) === expected || frameMatch) return;
+  event("step-navigation", { url: expectedUrl, message: "ניווט לדף שבו הוקלט השלב" });
+  await page.goto(expectedUrl, { waitUntil: "domcontentloaded" });
+}
+
 async function smartAction(page, step, record, fillValue) {
+  await preparePageForStep(page, step);
   const candidates = [step.locator, ...(step.fallbacks || [])].filter(Boolean);
   let lastError = null;
   for (const candidate of candidates) {
     try {
       if (candidate.strategy === "position") {
         const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
-        await page.mouse.click((candidate.x_ratio || 0.5) * viewport.width, (candidate.y_ratio || 0.5) * viewport.height);
+        const x = (candidate.x_ratio || 0.5) * viewport.width;
+        const y = (candidate.y_ratio || 0.5) * viewport.height;
+        const blockingOverlay = await page.evaluate(({ x, y }) => {
+          const element = document.elementFromPoint(x, y);
+          const overlay = element?.closest(
+            '[role="dialog"], [aria-modal="true"], [class*="cookie" i], [id*="cookie" i], [class*="banner" i], [id*="banner" i], [class*="consent" i], [id*="consent" i]'
+          );
+          return overlay ? (overlay.innerText || overlay.getAttribute("aria-label") || "חלון קופץ") : "";
+        }, { x, y });
+        if (blockingOverlay && !step.optional) {
+          throw new Error(`באנר או חלון קופץ מסתיר את יעד הלחיצה: ${String(blockingOverlay).slice(0, 120)}`);
+        }
+        await page.mouse.click(x, y);
         if (fillValue !== undefined) await page.keyboard.insertText(fillValue);
         return;
       }
@@ -223,8 +400,17 @@ async function executeStep(page, step, record, signal) {
   else if (action === "click_text") await page.getByText(target, { exact: false }).click();
   else if (action === "fill_label") await page.getByLabel(target, { exact: false }).fill(value);
   else if (action === "fill_placeholder") await page.getByPlaceholder(target, { exact: false }).fill(value);
-  else if (action === "smart_click") await smartAction(page, step, record, undefined);
-  else if (action === "smart_fill") await smartAction(page, step, record, value);
+  else if (action === "smart_click" || action === "smart_fill") {
+    try {
+      await smartAction(page, step, record, action === "smart_fill" ? value : undefined);
+    } catch (error) {
+      if (!step.optional) throw error;
+      event("step-skipped", {
+        step: step.name || step.target || action,
+        message: "הפעולה האופציונלית לא הופיעה ולכן דולגה",
+      });
+    }
+  }
   else if (action === "select_option") {
     const control = page.getByLabel(target, { exact: false }).first();
     const tagName = await control.evaluate((element) => element.tagName.toLowerCase());
@@ -296,7 +482,8 @@ async function handle(message) {
   try {
     if (command === "status") return reply(id, true, await publishStatus());
     if (command === "open-browser") {
-      await ensureBrowser(payload.startUrl || "https://www.gov.il/he/service/mvat");
+      maintainBrowserConnection = true;
+      await ensureBrowser(payload.startUrl || DEFAULT_START_URL);
       return reply(id, true, await publishStatus());
     }
     if (command === "prepare-profile") {
@@ -304,7 +491,13 @@ async function handle(message) {
       return reply(id, true, await publishStatus());
     }
     if (command === "close-browser") {
-      if (browser) await browser.close();
+      maintainBrowserConnection = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      if (browser && ownsBrowserProcess) await browser.close();
+      browser = null;
+      context = null;
+      activePage = null;
       return reply(id, true, engineStatus());
     }
     if (command === "continue") {
@@ -332,10 +525,16 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line
   catch (error) { event("protocol-error", { error: error.message }); }
 });
 process.on("message", (message) => { void handle(message); });
+if (process.parentPort) {
+  process.parentPort.on("message", (event) => { void handle(event.data ?? event); });
+}
 
 process.on("SIGTERM", async () => {
   try {
-    if (browser) await browser.close();
+    shuttingDown = true;
+    maintainBrowserConnection = false;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    if (browser && ownsBrowserProcess) await browser.close();
     if (chromeProcess && !chromeProcess.killed) chromeProcess.kill();
     if (profileSetupProcess && !profileSetupProcess.killed) profileSetupProcess.kill();
   } finally { process.exit(0); }

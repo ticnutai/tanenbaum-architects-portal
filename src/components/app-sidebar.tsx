@@ -104,7 +104,16 @@ export function AppSidebar({
                 {group.items.map((item) => (
                   <SidebarMenuItem key={item.url}>
                     <SidebarMenuButton asChild isActive={pathname === item.url || (item.url === "/automations" && pathname.startsWith("/automations/"))} tooltip={item.title}>
-                      <Link to={item.url} className="flex items-center gap-2">
+                      <Link
+                        to={item.url}
+                        onClick={(event) => {
+                          if (pathname !== "/logs" || item.url === "/logs" || !window.mavatDesktop?.navigateRoute) return;
+                          event.preventDefault();
+                          event.stopPropagation();
+                          void window.mavatDesktop.navigateRoute(item.url);
+                        }}
+                        className="flex items-center gap-2"
+                      >
                         <item.icon className="size-4" />
                         <span>{item.title}</span>
                       </Link>

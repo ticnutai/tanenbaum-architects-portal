@@ -1,0 +1,24 @@
+{
+  "name": "mavat-recorder-extension",
+  "version": "1.0.0",
+  "description": "סיידבר הקלטה חי למערכת אוטומציית מבא״ת",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "build": "wxt build",
+    "zip": "wxt zip",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@wxt-dev/module-react": "^1.2.2",
+    "typescript": "^5.8.3",
+    "wxt": "^0.21.4"
+  }
+}
