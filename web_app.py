@@ -19,6 +19,7 @@ import websocket
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 os.environ.setdefault("PYTHONUTF8", "1")
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
@@ -94,8 +95,7 @@ class Runtime:
         self.chrome_preview_frames = 0
         self.chrome_interaction_lock = threading.Lock()
         self.recorder_suppressed_until = 0.0
-        self.last_recorded_fingerprint = ""
-        self.last_recorded_at = 0.0
+        self.recent_recorded_fingerprints: dict[str, float] = {}
         self.event_listeners: list[queue.Queue[dict[str, Any]]] = []
         self.extension_live_connections: dict[str, int] = {}
         self.workflow_revision = 0
@@ -493,16 +493,17 @@ class Runtime:
             if now < self.recorder_suppressed_until:
                 self.log("הפעולה נקלטה במצב לימוד וממתינה לאישור לפני שמירה")
                 return
-            if (
-                fingerprint == self.last_recorded_fingerprint
-                and now - self.last_recorded_at < 3.0
-            ):
+            self.recent_recorded_fingerprints = {
+                key: recorded_at
+                for key, recorded_at in self.recent_recorded_fingerprints.items()
+                if now - recorded_at < 3.0
+            }
+            if fingerprint in self.recent_recorded_fingerprints:
                 self.log(
                     f"התעלמות מקליטה כפולה: {step.get('name', step.get('type', ''))}"
                 )
                 return
-            self.last_recorded_fingerprint = fingerprint
-            self.last_recorded_at = now
+            self.recent_recorded_fingerprints[fingerprint] = now
             if step.get("type") != "fill_secret" and self.chrome_preview_frame:
                 folder = self.store.base_dir / "screenshots" / "recording"
                 folder.mkdir(parents=True, exist_ok=True)
@@ -572,6 +573,14 @@ class Runtime:
             open_browseros_page(selected, MAVAT_URL, background=True)
             time.sleep(0.35)
         port = selected.cdp_port
+        target_fragments = ["gov.il", "mavat.moin.gov.il", "login.gov.il"]
+        for step in self.read_workflow().get("steps", []):
+            for field in ("value", "target", "page_url"):
+                value = str(step.get(field) or "").strip()
+                parsed = urlparse(value)
+                if parsed.scheme in {"http", "https"} and parsed.netloc:
+                    target_fragments.append(parsed.netloc.lower())
+        target_fragments = list(dict.fromkeys(target_fragments))
 
         def started(message: str) -> None:
             self.recording_state = "recording"
@@ -596,6 +605,7 @@ class Runtime:
             on_target=self.follow_chrome_target,
             on_started=started,
             on_finished=finished,
+            target_fragments=tuple(target_fragments),
         )
         self.recorder_thread = threading.Thread(target=self.recorder.run, daemon=True)
         self.recorder_thread.start()
@@ -628,9 +638,6 @@ class Runtime:
         if self.runner_thread and self.runner_thread.is_alive():
             return False, "כבר מתבצעת הרצה"
         profiles = {profile.id: profile for profile in self.store.profiles()}
-        profile = profiles.get(profile_id)
-        if not profile:
-            return False, "יש לבחור פרופיל כניסה"
         workflow = self.read_workflow()
         if step_indices is not None:
             valid_indices = sorted({index for index in step_indices if 0 <= index < len(workflow.get("steps", []))})
@@ -642,6 +649,13 @@ class Runtime:
                 step["_original_step_number"] = index + 1
                 selected_steps.append(step)
             workflow = {**workflow, "steps": selected_steps}
+        profile = profiles.get(profile_id)
+        needs_login_profile = any(
+            step.get("enabled", True) and step.get("type") == "fill_secret"
+            for step in workflow.get("steps", [])
+        )
+        if needs_login_profile and not profile:
+            return False, "השלבים שנבחרו כוללים סיסמה ולכן יש לבחור פרופיל כניסה"
         data_file, _ = self.active_data_file()
         needs_records = any(step.get("scope", "per_record") == "per_record" for step in workflow.get("steps", []))
         if not data_file and needs_records:
@@ -709,8 +723,9 @@ class Runtime:
         selected_browser, _ = self.browser_endpoint()
         self.runner = WorkflowRunner(
             workflow=workflow, records=records,
-            username=profile.username, password=secrets.get(profile.id, ""),
-            default_profile_id=profile.id, secrets_by_profile=secrets,
+            username=profile.username if profile else "",
+            password=secrets.get(profile.id, "") if profile else "",
+            default_profile_id=profile.id if profile else "", secrets_by_profile=secrets,
             browser_profile_dir=str(self.store.data["browser_profile_dir"]),
             chrome_debug_port=selected_browser.cdp_port,
             callbacks=RunCallbacks(log=self.log, status=status, manual=manual, finished=finished, step=step_status, error=run_error),
@@ -1452,6 +1467,11 @@ def api_settings() -> Response:
         "error": error,
         "run": runtime.run_status(),
         "browser_provider": str(runtime.store.data.get("browser_provider") or "auto"),
+        "automation_engine": {
+            "auto_connect": bool(runtime.store.data.get("automation_engine_auto_connect", False)),
+            "keep_connected": bool(runtime.store.data.get("automation_engine_keep_connected", True)),
+            "idle_minutes": max(1, min(240, int(runtime.store.data.get("automation_engine_idle_minutes", 20)))),
+        },
         "browser": browser_status,
         "extension_bridge": runtime.extension_status(include_code=True),
     })
@@ -1472,6 +1492,29 @@ def api_set_browser_provider() -> Response:
         f"ספק הדפדפן עודכן ל-{provider}; נבחר כעת {status.get('display_name')} בפורט {status.get('port')}"
     )
     return jsonify({"ok": True, "browser_provider": provider, "browser": status})
+
+
+@app.post("/api/settings/automation-engine")
+def api_set_automation_engine() -> Response:
+    payload = request.get_json(force=True) or {}
+    try:
+        idle_minutes = int(payload.get("idle_minutes", 20))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "זמן הניתוק חייב להיות מספר"}), 400
+    if not 1 <= idle_minutes <= 240:
+        return jsonify({"ok": False, "error": "זמן הניתוק חייב להיות בין דקה ל־240 דקות"}), 400
+    runtime.store.data["automation_engine_auto_connect"] = bool(payload.get("auto_connect", False))
+    runtime.store.data["automation_engine_keep_connected"] = bool(payload.get("keep_connected", True))
+    runtime.store.data["automation_engine_idle_minutes"] = idle_minutes
+    runtime.store.save()
+    return jsonify({
+        "ok": True,
+        "automation_engine": {
+            "auto_connect": runtime.store.data["automation_engine_auto_connect"],
+            "keep_connected": runtime.store.data["automation_engine_keep_connected"],
+            "idle_minutes": runtime.store.data["automation_engine_idle_minutes"],
+        },
+    })
 
 
 @app.post("/api/settings/data-file")

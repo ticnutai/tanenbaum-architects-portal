@@ -184,17 +184,6 @@ function RootComponent() {
 
   const sidebarOpen = sidebarAutoHide ? sidebarHovered || sidebarManualOpen : sidebarPinnedOpen;
   const goBack = () => {
-    // Chromium can wedge during an SPA unmount of the live log view in the
-    // packaged Electron build. Ask Electron's main process to replace the
-    // document so the navigation cannot be blocked by the old renderer.
-    if (pathname === "/logs") {
-      if (window.mavatDesktop?.navigateRoute) {
-        void window.mavatDesktop.navigateRoute("/workflow");
-      } else {
-        window.location.assign("/workflow");
-      }
-      return;
-    }
     if (router.history.canGoBack()) {
       router.history.back();
       return;

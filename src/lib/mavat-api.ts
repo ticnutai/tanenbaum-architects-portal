@@ -80,6 +80,11 @@ export type SettingsData = {
   error: string;
   run: RunState;
   browser_provider: "auto" | "browseros" | "chrome";
+  automation_engine: {
+    auto_connect: boolean;
+    keep_connected: boolean;
+    idle_minutes: number;
+  };
   browser: {
     connected: boolean;
     provider: "browseros" | "chrome";

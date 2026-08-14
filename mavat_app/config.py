@@ -59,6 +59,9 @@ class ConfigStore:
             "browseros_cdp_port": 0,
             "browseros_mcp_url": "",
             "extension_bridge_tokens": [],
+            "automation_engine_auto_connect": False,
+            "automation_engine_keep_connected": True,
+            "automation_engine_idle_minutes": 20,
         }
         if not self.config_path.exists():
             return defaults

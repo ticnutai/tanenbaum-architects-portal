@@ -12,6 +12,10 @@ declare global {
       };
       automationEngine: {
         command<T = unknown>(command: string, payload?: Record<string, unknown>): Promise<T>;
+        status(): Promise<AutomationEngineLifecycleStatus>;
+        connect(): Promise<AutomationEngineLifecycleStatus>;
+        disconnect(): Promise<AutomationEngineLifecycleStatus>;
+        configure(settings: AutomationEngineLifecycleSettings): Promise<AutomationEngineLifecycleStatus>;
         onEvent(listener: (event: AutomationEngineEvent) => void): () => void;
       };
       layout: {
@@ -41,5 +45,19 @@ declare global {
     profileDir: string;
     page: { title: string; url: string } | null;
     layout?: { ok: boolean; error?: string };
+  };
+
+  type AutomationEngineLifecycleSettings = {
+    autoConnect: boolean;
+    keepConnected: boolean;
+    idleMinutes: number;
+  };
+
+  type AutomationEngineLifecycleStatus = AutomationEngineLifecycleSettings & {
+    state: "ready" | "connected" | "active";
+    processRunning: boolean;
+    activeRequests: number;
+    lastActivityAt: string | null;
+    disconnectAt: string | null;
   };
 }

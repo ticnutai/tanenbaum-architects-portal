@@ -103,15 +103,13 @@ export function AppSidebar({
               <SidebarMenu>
                 {group.items.map((item) => (
                   <SidebarMenuItem key={item.url}>
-                    <SidebarMenuButton asChild isActive={pathname === item.url || (item.url === "/automations" && pathname.startsWith("/automations/"))} tooltip={item.title}>
+                    <SidebarMenuButton
+                      asChild
+                      isActive={pathname === item.url || (item.url === "/automations" && pathname.startsWith("/automations/"))}
+                    >
                       <Link
                         to={item.url}
-                        onClick={(event) => {
-                          if (pathname !== "/logs" || item.url === "/logs" || !window.mavatDesktop?.navigateRoute) return;
-                          event.preventDefault();
-                          event.stopPropagation();
-                          void window.mavatDesktop.navigateRoute(item.url);
-                        }}
+                        activeOptions={{ exact: item.url !== "/automations" }}
                         className="flex items-center gap-2"
                       >
                         <item.icon className="size-4" />
@@ -128,7 +126,7 @@ export function AppSidebar({
 
       <SidebarFooter className="border-t border-sidebar-border p-3 group-data-[collapsible=icon]:hidden">
         <p className="text-xs leading-relaxed text-sidebar-foreground/60">
-          גרסה 1.0 · מצב בדיקה פעיל כברירת מחדל
+          גרסה {import.meta.env.VITE_APP_VERSION} · מצב בדיקה פעיל כברירת מחדל
         </p>
       </SidebarFooter>
     </Sidebar>

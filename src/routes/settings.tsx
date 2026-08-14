@@ -1,250 +1,165 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
-import { toast } from "sonner";
+import { useEffect, useState } from "react";
 
-import { PageHeader } from "@/components/page-header";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
-import { Badge } from "@/components/ui/badge";
 import { mavatApi, type SettingsData } from "@/lib/mavat-api";
 
 export const Route = createFileRoute("/settings")({
-  head: () => ({
-    meta: [
-      { title: "הגדרות — טננבאום אדריכלות" },
-      {
-        name: "description",
-        content: "הגדרות המשרד והמערכת: פרטי משרד, כתובת מבא״ת, תיקיית פלט והתנהגות ברירת מחדל.",
-      },
-      { property: "og:title", content: "הגדרות — טננבאום אדריכלות" },
-      { property: "og:description", content: "הגדרות המשרד ותצורת המערכת." },
-    ],
-  }),
+  head: () => ({ meta: [{ title: "הגדרות — טננבאום אדריכלות" }] }),
   component: SettingsPage,
 });
 
+type Provider = "auto" | "browseros" | "chrome";
+type EngineDraft = AutomationEngineLifecycleSettings;
+
+const cardClass = "rounded-xl border border-border bg-card p-6 shadow-sm";
+const buttonClass = "inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground shadow-sm disabled:cursor-not-allowed disabled:opacity-50";
+const secondaryButtonClass = "inline-flex h-10 items-center justify-center rounded-md border border-input bg-background px-4 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50";
+const selectClass = "h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring";
+
 function SettingsPage() {
   const [settings, setSettings] = useState<SettingsData | null>(null);
-  const [provider, setProvider] = useState<"auto" | "browseros" | "chrome">("auto");
-  const [saving, setSaving] = useState(false);
-  const [extensionBusy, setExtensionBusy] = useState(false);
+  const [provider, setProvider] = useState<Provider>("auto");
+  const [providerSaved, setProviderSaved] = useState<Provider>("auto");
+  const [engine, setEngine] = useState<EngineDraft>({ autoConnect: false, keepConnected: true, idleMinutes: 20 });
+  const [engineSaved, setEngineSaved] = useState<EngineDraft>({ autoConnect: false, keepConnected: true, idleMinutes: 20 });
+  const [engineStatus, setEngineStatus] = useState<AutomationEngineLifecycleStatus | null>(null);
+  const [busy, setBusy] = useState("");
+  const [message, setMessage] = useState("");
   const [extensionPath, setExtensionPath] = useState("");
-  const extensionLive = Boolean(settings?.extension_bridge.live_count);
-  const load = useCallback(async () => {
-    const data = await mavatApi<SettingsData>("/api/settings");
+
+  const applySettings = (data: SettingsData) => {
+    const selected = data.browser_provider || "auto";
+    const lifecycle = {
+      autoConnect: data.automation_engine?.auto_connect ?? false,
+      keepConnected: data.automation_engine?.keep_connected ?? true,
+      idleMinutes: data.automation_engine?.idle_minutes ?? 20,
+    };
     setSettings(data);
-    setProvider(data.browser_provider || "auto");
-  }, []);
+    setProvider(selected);
+    setProviderSaved(selected);
+    setEngine(lifecycle);
+    setEngineSaved(lifecycle);
+  };
+
+  const reload = async () => applySettings(await mavatApi<SettingsData>("/api/settings"));
+
   useEffect(() => {
-    void load().catch((error) => toast.error(error.message));
-    if (window.mavatDesktop?.extension) {
-      void window.mavatDesktop.extension.getPath().then(setExtensionPath);
-    }
-  }, [load]);
-  const saveProvider = async () => {
-    setSaving(true);
+    let active = true;
+    mavatApi<SettingsData>("/api/settings")
+      .then((data) => { if (active) applySettings(data); })
+      .catch((error) => { if (active) setMessage(error instanceof Error ? error.message : "טעינת ההגדרות נכשלה"); });
+    return () => { active = false; };
+  }, []);
+
+  const run = async (name: string, action: () => Promise<void>, success: string) => {
+    setBusy(name);
+    setMessage("");
     try {
-      await mavatApi("/api/settings/browser-provider", {
-        method: "POST",
-        body: JSON.stringify({ provider }),
-      });
-      await load();
-      toast.success("חיבור הדפדפן נשמר");
+      await action();
+      setMessage(success);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "שמירת החיבור נכשלה");
+      setMessage(error instanceof Error ? error.message : "הפעולה נכשלה");
     } finally {
-      setSaving(false);
+      setBusy("");
     }
   };
-  const createPairingCode = async () => {
-    setExtensionBusy(true);
-    try {
-      await mavatApi("/api/extension/admin/pairing-code", { method: "POST" });
-      await load();
-      toast.success("נוצר קוד חיבור חד־פעמי לעשר דקות");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "יצירת הקוד נכשלה");
-    } finally {
-      setExtensionBusy(false);
-    }
-  };
-  const revokeExtensions = async () => {
+
+  const saveProvider = () => run("provider", async () => {
+    await mavatApi("/api/settings/browser-provider", { method: "POST", body: JSON.stringify({ provider }) });
+    await reload();
+  }, "חיבור הדפדפן נשמר");
+
+  const saveEngine = () => run("engine-save", async () => {
+    await mavatApi("/api/settings/automation-engine", {
+      method: "POST",
+      body: JSON.stringify({ auto_connect: engine.autoConnect, keep_connected: engine.keepConnected, idle_minutes: engine.idleMinutes }),
+    });
+    const status = await window.mavatDesktop?.automationEngine.configure(engine);
+    if (status) setEngineStatus(status);
+    setEngineSaved(engine);
+  }, "הגדרות מנוע האוטומציה נשמרו");
+
+  const controlEngine = (action: "connect" | "disconnect") => run(`engine-${action}`, async () => {
+    const desktop = window.mavatDesktop?.automationEngine;
+    if (!desktop) throw new Error("השליטה במנוע זמינה באפליקציית Electron בלבד");
+    setEngineStatus(action === "connect" ? await desktop.connect() : await desktop.disconnect());
+  }, action === "connect" ? "מנוע האוטומציה מחובר" : "מנוע האוטומציה נותק");
+
+  const refreshEngine = () => run("engine-status", async () => {
+    const desktop = window.mavatDesktop?.automationEngine;
+    if (!desktop) throw new Error("השליטה במנוע זמינה באפליקציית Electron בלבד");
+    setEngineStatus(await desktop.status());
+  }, "סטטוס המנוע עודכן");
+
+  const createPairingCode = () => run("pair", async () => {
+    await mavatApi("/api/extension/admin/pairing-code", { method: "POST" });
+    await reload();
+  }, "נוצר קוד חיבור חד־פעמי");
+
+  const revokeExtensions = () => {
     if (!window.confirm("לבטל את כל חיבורי תוסף ההקלטה?")) return;
-    setExtensionBusy(true);
-    try {
+    void run("revoke", async () => {
       await mavatApi("/api/extension/admin/revoke", { method: "POST" });
-      await load();
-      toast.success("חיבורי התוסף בוטלו");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "ביטול החיבורים נכשל");
-    } finally {
-      setExtensionBusy(false);
-    }
+      await reload();
+    }, "חיבורי התוסף בוטלו");
   };
-  const showExtensionFolder = async () => {
-    try {
-      const path = await window.mavatDesktop?.extension.showFolder();
-      if (path) setExtensionPath(path);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "פתיחת תיקיית התוסף נכשלה");
-    }
-  };
+
+  const showExtensionFolder = () => run("folder", async () => {
+    const extension = window.mavatDesktop?.extension;
+    if (!extension) throw new Error("פתיחת התיקייה זמינה באפליקציית Electron בלבד");
+    const knownPath = await extension.getPath();
+    if (knownPath) setExtensionPath(knownPath);
+    await extension.showFolder();
+  }, "תיקיית התוסף נפתחה");
+
+  const engineDirty = JSON.stringify(engine) !== JSON.stringify(engineSaved);
+  const engineLabel = engineStatus?.state === "active" ? "פעיל כעת" : engineStatus?.processRunning ? "מחובר וממתין" : "מוכן לפי דרישה";
+  const extensionLive = Boolean(settings?.extension_bridge.live_count);
+
   return (
-    <div className="mx-auto max-w-3xl space-y-8">
-      <PageHeader eyebrow="תצורה" title="הגדרות" description="פרטי המשרד והתנהגות ברירת המחדל." />
-      <Card>
-        <CardHeader>
-          <CardTitle className="font-display text-lg">דפדפן האוטומציה</CardTitle>
-          <CardDescription>
-            BrowserOS נבחר אוטומטית דרך כתובת ה־MCP שמוצגת במסך Connected agents ודרך CDP;
-            Chrome הייעודי נשאר כגיבוי.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3">
-            <div>
-              <p className="font-medium">{settings?.browser.display_name || "בודק חיבור..."}</p>
-              <p className="text-xs text-muted-foreground" dir="ltr">
-                CDP {settings?.browser.port || "—"}
-                {settings?.browser.mcp_url ? ` · ${settings.browser.mcp_url}` : ""}
-              </p>
-            </div>
-            <Badge variant={settings?.browser.connected ? "default" : "destructive"}>
-              {settings?.browser.connected ? "מחובר" : "מנותק"}
-            </Badge>
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="browser-provider">בחירת מנוע</Label>
-            <select
-              id="browser-provider"
-              className="h-10 w-full rounded-md border bg-background px-3"
-              value={provider}
-              onChange={(event) => setProvider(event.target.value as typeof provider)}
-            >
-              <option value="auto">אוטומטי — BrowserOS מועדף, Chrome גיבוי</option>
-              <option value="browseros">BrowserOS בלבד</option>
-              <option value="chrome">Google Chrome ייעודי בלבד</option>
-            </select>
-          </div>
-          <div className="flex gap-2">
-            <Button
-              disabled={saving || provider === settings?.browser_provider}
-              onClick={saveProvider}
-            >
-              {saving ? "שומר..." : "שמירת חיבור"}
-            </Button>
-            <Button
-              variant="outline"
-              disabled={saving || provider === settings?.browser_provider}
-              onClick={() => setProvider(settings?.browser_provider || "auto")}
-            >
-              ביטול
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle className="font-display text-lg">סיידבר הקלטה ב־BrowserOS</CardTitle>
-          <CardDescription>
-            תצוגה חיה של השלבים בזמן העבודה בדפדפן. ההקלטה עצמה ממשיכה להתבצע במנוע Python/CDP היחיד
-            — הסיידבר אינו יוצר מנוע נוסף, וחיבור ה־MCP אינו מוחלף על ידו.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3">
-            <div>
-              <p className="font-medium">תוסף מקליט מבא״ת</p>
-              <p className="text-xs text-muted-foreground">
-                {extensionLive
-                  ? `${settings?.extension_bridge.live_count} סיידבר מחובר כעת`
-                  : settings?.extension_bridge.paired_count
-                    ? `${settings.extension_bridge.paired_count} הרשאה שמורה; הסיידבר אינו פתוח כעת`
-                    : "עדיין לא אושר תוסף"}
-              </p>
-            </div>
-            <Badge variant={extensionLive ? "default" : "secondary"}>
-              {extensionLive
-                ? "מחובר עכשיו"
-                : settings?.extension_bridge.paired_count
-                  ? "מורשה, לא פעיל"
-                  : "ממתין לאישור"}
-            </Badge>
-          </div>
-          {settings?.extension_bridge.pairing_active && settings.extension_bridge.pairing_code ? (
-            <div className="rounded-md border border-amber-300 bg-amber-50 p-4 text-center dark:bg-amber-950/20">
-              <p className="text-sm text-muted-foreground">הזן את הקוד בסיידבר של BrowserOS</p>
-              <p className="mt-2 font-mono text-3xl font-bold tracking-[0.35em]" dir="ltr">
-                {settings.extension_bridge.pairing_code}
-              </p>
-              <p className="mt-2 text-xs text-muted-foreground">
-                הקוד חד־פעמי ותקף עד {settings.extension_bridge.pairing_expires_at || "עשר דקות"}
-              </p>
-            </div>
-          ) : null}
-          <div className="flex flex-wrap gap-2">
-            <Button onClick={createPairingCode} disabled={extensionBusy}>
-              {extensionBusy ? "מבצע..." : "יצירת קוד חיבור"}
-            </Button>
-            {window.mavatDesktop?.extension ? (
-              <Button variant="outline" onClick={showExtensionFolder}>
-                פתיחת תיקיית התוסף
-              </Button>
-            ) : null}
-            <Button
-              variant="outline"
-              onClick={revokeExtensions}
-              disabled={extensionBusy || !settings?.extension_bridge.paired_count}
-            >
-              ביטול כל החיבורים
-            </Button>
-          </div>
-          {extensionPath ? (
-            <p
-              className="break-all rounded-md bg-muted p-2 text-xs text-muted-foreground"
-              dir="ltr"
-            >
-              {extensionPath}
-            </p>
-          ) : null}
-          <ol className="list-decimal space-y-1 pe-5 text-sm text-muted-foreground">
-            <li>פתח ב־BrowserOS את מסך התוספים והפעל מצב מפתח.</li>
-            <li>בחר „טעינת תוסף שלא נארז” ובחר את התיקייה שמוצגת כאן.</li>
-            <li>לחץ פעם אחת על סמל התוסף, הזן את הקוד, והסיידבר יישאר מחובר.</li>
-          </ol>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle className="font-display text-lg">פרטי משרד</CardTitle>
-          <CardDescription>מוצגים בכותרות ובדוחות</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="office">שם המשרד</Label>
-            <Input id="office" defaultValue="משרד טננבאום אדריכלות" />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="mavat">כתובת מבא״ת</Label>
-            <Input id="mavat" defaultValue="https://mavat.iplan.gov.il" dir="ltr" />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="out">תיקיית פלט</Label>
-            <Input id="out" defaultValue="C:\\Tannenbaum\\runs" dir="ltr" />
-          </div>
-          <div className="flex items-center justify-between rounded-md border border-border p-3">
-            <div>
-              <p className="text-sm font-medium">התחל תמיד במצב בדיקה</p>
-              <p className="text-xs text-muted-foreground">מומלץ להשאיר פעיל</p>
-            </div>
-            <Switch defaultChecked />
-          </div>
-          <Button>שמירת הגדרות</Button>
-        </CardContent>
-      </Card>
+    <div className="mx-auto max-w-3xl space-y-8" data-testid="settings-page">
+      <header className="space-y-2 border-b border-border pb-6">
+        <p className="text-sm font-medium tracking-[0.25em] text-accent">תצורה</p>
+        <h1 className="font-display text-4xl font-bold">הגדרות</h1>
+        <p className="text-muted-foreground">חיבורי הדפדפן, מנוע האוטומציה ופרטי המשרד.</p>
+      </header>
+      {message ? <p className="rounded-md border border-primary/20 bg-primary/5 px-4 py-3 text-sm" role="status">{message}</p> : null}
+
+      <section className={cardClass}>
+        <SectionTitle title="דפדפן האוטומציה" description="BrowserOS מועדף אוטומטית; Chrome הייעודי נשאר כגיבוי." />
+        <StatusRow label={settings?.browser.display_name || "בודק חיבור..."} detail={`CDP ${settings?.browser.port || "—"}`} active={Boolean(settings?.browser.connected)} />
+        <SettingSelect label="בחירת מנוע" value={provider} onChange={(value) => setProvider(value as Provider)} options={[['auto', 'אוטומטי — BrowserOS מועדף, Chrome גיבוי'], ['browseros', 'BrowserOS בלבד'], ['chrome', 'Google Chrome ייעודי בלבד']]} />
+        <div className="mt-4 flex gap-2"><button className={buttonClass} disabled={busy !== "" || provider === providerSaved} onClick={() => void saveProvider()}>שמירת חיבור</button><button className={secondaryButtonClass} disabled={busy !== "" || provider === providerSaved} onClick={() => setProvider(providerSaved)}>ביטול</button></div>
+      </section>
+
+      <section className={cardClass}>
+        <SectionTitle title="מנוע האוטומציה" description="Playwright עולה רק כשמתחילים פעולה או כשלוחצים על חיבור." />
+        <StatusRow label={engineLabel} detail="אין בדיקת רקע חוזרת" active={Boolean(engineStatus?.processRunning)} />
+        <div className="mt-5 space-y-3">
+          <SettingSelect label="חיבור המנוע עם פתיחת האפליקציה" value={engine.autoConnect ? 'on' : 'off'} onChange={(value) => setEngine((current) => ({ ...current, autoConnect: value === 'on' }))} options={[['off', 'כבוי — מומלץ'], ['on', 'פעיל']]} />
+          <SettingSelect label="השארת המנוע מחובר אחרי פעולה" value={engine.keepConnected ? 'on' : 'off'} onChange={(value) => setEngine((current) => ({ ...current, keepConnected: value === 'on' }))} options={[['on', 'פעיל'], ['off', 'כבוי']]} />
+          <SettingSelect label="ניתוק לאחר חוסר פעילות" value={String(engine.idleMinutes)} onChange={(value) => setEngine((current) => ({ ...current, idleMinutes: Number(value) }))} options={[5, 10, 20, 30, 60, 120].map((minutes) => [String(minutes), `${minutes} דקות`])} />
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2"><button className={buttonClass} disabled={busy !== "" || !engineDirty} onClick={() => void saveEngine()}>שמירת הגדרות מנוע</button><button className={secondaryButtonClass} disabled={busy !== "" || !engineDirty} onClick={() => setEngine(engineSaved)}>ביטול</button><button className={secondaryButtonClass} disabled={busy !== ""} onClick={() => void refreshEngine()}>רענון סטטוס</button><button className={secondaryButtonClass} disabled={busy !== "" || engineStatus?.state === "active"} onClick={() => void controlEngine(engineStatus?.processRunning ? "disconnect" : "connect")}>{engineStatus?.processRunning ? "ניתוק עכשיו" : "חיבור עכשיו"}</button></div>
+      </section>
+
+      <section className={cardClass}>
+        <SectionTitle title="סיידבר הקלטה ב־BrowserOS" description="תצוגה חיה של השלבים; מנוע Python/CDP נשאר המנוע היחיד." />
+        <StatusRow label="תוסף מקליט מבא״ת" detail={extensionLive ? `${settings?.extension_bridge.live_count} סיידבר מחובר` : settings?.extension_bridge.paired_count ? "הרשאה שמורה; הסיידבר אינו פתוח" : "עדיין לא אושר תוסף"} active={extensionLive} />
+        {settings?.extension_bridge.pairing_active && settings.extension_bridge.pairing_code ? <div className="mt-4 rounded-md border border-amber-300 bg-amber-50 p-4 text-center dark:bg-amber-950/20"><p className="text-sm text-muted-foreground">הזן את הקוד בסיידבר של BrowserOS</p><p className="mt-2 font-mono text-3xl font-bold tracking-[0.35em]" dir="ltr">{settings.extension_bridge.pairing_code}</p></div> : null}
+        <div className="mt-4 flex flex-wrap gap-2"><button className={buttonClass} disabled={busy !== ""} onClick={() => void createPairingCode()}>יצירת קוד חיבור</button><button className={secondaryButtonClass} disabled={busy !== "" || !window.mavatDesktop} onClick={() => void showExtensionFolder()}>פתיחת תיקיית התוסף</button><button className={secondaryButtonClass} disabled={busy !== "" || !settings?.extension_bridge.paired_count} onClick={revokeExtensions}>ביטול כל החיבורים</button></div>
+        {extensionPath ? <p className="mt-4 break-all rounded-md bg-muted p-2 text-xs" dir="ltr">{extensionPath}</p> : null}
+      </section>
+
+      <section className={cardClass}>
+        <SectionTitle title="פרטי משרד" description="ערכי ברירת המחדל הנוכחיים." />
+        <dl className="divide-y rounded-md border"><OfficeValue label="שם המשרד" value="משרד טננבאום אדריכלות" /><OfficeValue label="כתובת מבא״ת" value="https://mavat.iplan.gov.il" /><OfficeValue label="תיקיית פלט" value="C:\\Tannenbaum\\runs" /></dl>
+      </section>
     </div>
   );
 }
+
+function SectionTitle({ title, description }: { title: string; description: string }) { return <div className="mb-4"><h2 className="font-display text-xl font-bold">{title}</h2><p className="mt-1 text-sm text-muted-foreground">{description}</p></div>; }
+function StatusRow({ label, detail, active }: { label: string; detail: string; active: boolean }) { return <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3"><div><p className="font-medium">{label}</p><p className="text-xs text-muted-foreground">{detail}</p></div><span className={`rounded-full px-3 py-1 text-xs ${active ? 'bg-emerald-100 text-emerald-800' : 'bg-muted text-muted-foreground'}`}>{active ? "מחובר" : "מוכן"}</span></div>; }
+function SettingSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: Array<string[]> }) { return <label className="mt-4 block space-y-2 text-sm font-medium"><span>{label}</span><select className={selectClass} value={value} onChange={(event) => onChange(event.target.value)}>{options.map(([optionValue, text]) => <option key={optionValue} value={optionValue}>{text}</option>)}</select></label>; }
+function OfficeValue({ label, value }: { label: string; value: string }) { return <div className="flex flex-wrap justify-between gap-2 p-3"><dt className="font-medium">{label}</dt><dd className="text-muted-foreground" dir={value.startsWith('http') || value.includes('\\') ? 'ltr' : 'rtl'}>{value}</dd></div>; }

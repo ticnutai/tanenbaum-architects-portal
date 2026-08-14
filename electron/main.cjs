@@ -9,10 +9,13 @@ if (process.env.MAVAT_ELECTRON_USER_DATA_DIR) {
   app.setPath("userData", path.resolve(process.env.MAVAT_ELECTRON_USER_DATA_DIR));
 }
 
-// Keep a localhost-only DevTools endpoint available for end-to-end health
-// checks. It never exposes the renderer outside this computer.
-app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
-app.commandLine.appendSwitch("remote-debugging-port", process.env.MAVAT_ELECTRON_DEBUG_PORT || "9333");
+// Electron's own DevTools endpoint is diagnostic-only. Keeping it enabled with
+// no attached client caused a reproducible renderer spin on this Windows host.
+// This is unrelated to the external browser CDP used by the automation engine.
+if (process.env.MAVAT_ELECTRON_DEBUG_PORT) {
+  app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
+  app.commandLine.appendSwitch("remote-debugging-port", process.env.MAVAT_ELECTRON_DEBUG_PORT);
+}
 
 const ROOT = path.resolve(__dirname, "..");
 const RESOURCE_ROOT = app.isPackaged ? process.resourcesPath : ROOT;
@@ -23,7 +26,14 @@ const AUTOMATION_PROFILE = app.isPackaged
 const preferredPythonPort = Number(process.env.MAVAT_PYTHON_PORT || 18473);
 let pythonPort = preferredPythonPort;
 let PYTHON_URL = `http://127.0.0.1:${pythonPort}`;
-const WEB_URL = "http://127.0.0.1:18474";
+const EXTERNAL_LOCALHOST_URL = String(process.env.MAVAT_EXTERNAL_LOCALHOST_URL || "")
+  .trim()
+  .replace(/\/$/, "");
+const ISOLATED_LOCALHOST_MODE = process.env.MAVAT_ELECTRON_ISOLATE_LOCALHOST === "1";
+const ISOLATED_AUTOMATION_ENGINE = process.env.MAVAT_ELECTRON_ISOLATE_AUTOMATION_ENGINE === "1";
+const BACKGROUND_THROTTLING = process.env.MAVAT_ELECTRON_BACKGROUND_THROTTLING === "1"
+  || (ISOLATED_LOCALHOST_MODE && process.env.MAVAT_ELECTRON_BACKGROUND_THROTTLING !== "0");
+const WEB_URL = EXTERNAL_LOCALHOST_URL || "http://127.0.0.1:18474";
 const START_HIDDEN = process.env.MAVAT_ELECTRON_START_HIDDEN === "1";
 // Attach Playwright lazily. An already-open browser can emit a very large CDP
 // stream, so startup must remain responsive before recording or running.
@@ -42,15 +52,21 @@ const electronWindows = new Set();
 const automationEventSubscribers = new Set();
 let automationEventSummary = new Map();
 let automationEventSummaryTimer = null;
+let automationIdleTimer = null;
+let automationLastActivityAt = null;
+let automationActiveRequests = 0;
+let automationBackgroundActive = false;
+let automationLifecycleSettings = {
+  autoConnect: false,
+  keepConnected: true,
+  idleMinutes: 20,
+};
 let rendererReloadTimer = null;
 let rendererReloadHistory = [];
 let appIsQuitting = false;
 let desktopLogStream = null;
 let diagnosticsTimer = null;
-let rendererProbePending = false;
-let rendererProbeStartedAt = 0;
-let rendererProbeLastOkAt = 0;
-let rendererProbeLastReportedAt = 0;
+let rendererPulseLastReportedAt = 0;
 let lastRendererPulse = null;
 let tracingActive = false;
 let traceStopPending = false;
@@ -188,28 +204,23 @@ function installApiDiagnostics(window) {
 }
 
 function startRuntimeDiagnostics(window) {
-  rendererProbeLastOkAt = Date.now();
   diagnosticsTimer = setInterval(() => {
     if (appIsQuitting || window.isDestroyed()) return;
     const now = Date.now();
-    if (!rendererProbePending) {
-      rendererProbePending = true;
-      rendererProbeStartedAt = now;
-      void window.webContents.executeJavaScript("performance.now()", true).then(() => {
-        rendererProbePending = false;
-        rendererProbeLastOkAt = Date.now();
-      }).catch((error) => {
-        rendererProbePending = false;
-        logLine("renderer-probe-error", error.message || String(error));
-      });
-    } else if (
-      now - rendererProbeStartedAt >= RENDERER_STALL_MS &&
-      now - rendererProbeLastReportedAt >= 2000
+    // Never inject JavaScript into the renderer as a health probe. On the
+    // packaged Windows build, repeated executeJavaScript calls could wedge the
+    // renderer they were meant to observe. The sandboxed preload already emits
+    // a passive pulse every 500ms, which is sufficient for diagnostics.
+    const lastPulseAt = Number(lastRendererPulse?.receivedAt || lastRendererPulse?.at || 0);
+    if (
+      lastPulseAt > 0 &&
+      now - lastPulseAt >= RENDERER_STALL_MS &&
+      now - rendererPulseLastReportedAt >= 2000
     ) {
-      rendererProbeLastReportedAt = now;
+      rendererPulseLastReportedAt = now;
       logLine("renderer-probe-stalled", JSON.stringify({
-        stalledForMs: now - rendererProbeStartedAt,
-        lastProbeOkAgoMs: now - rendererProbeLastOkAt,
+        stalledForMs: now - lastPulseAt,
+        lastProbeOkAgoMs: now - lastPulseAt,
         lastPulse: lastRendererPulse,
         metrics: processMetricsSnapshot(),
         url: window.webContents.getURL(),
@@ -298,10 +309,17 @@ function startWindowLinking(profileDir = activeAutomationProfile) {
 
 function sendAutomationCommand(command, payload = {}) {
   return new Promise((resolve, reject) => {
+    // Playwright is a heavy Chromium automation service. Starting it beside the
+    // renderer during first paint caused a reproducible Windows renderer spin.
+    // Start it only when the user actually invokes an automation command.
+    if (!automationProcess) startAutomationEngine();
     if (!automationProcess) return reject(new Error("מנוע Playwright אינו מחובר"));
+    if (command === "run") automationBackgroundActive = true;
+    markAutomationActivity(true);
     const id = `engine-${++automationSequence}`;
     const timeout = setTimeout(() => {
       automationRequests.delete(id);
+      markAutomationActivity(false);
       reject(new Error("מנוע Playwright לא השיב בזמן"));
     }, 20000);
     automationRequests.set(id, { resolve, reject, timeout });
@@ -309,8 +327,57 @@ function sendAutomationCommand(command, payload = {}) {
   });
 }
 
+function automationLifecycleStatus() {
+  const processRunning = Boolean(automationProcess);
+  const idleMs = automationLifecycleSettings.idleMinutes * 60 * 1000;
+  const disconnectAt = processRunning && automationLifecycleSettings.keepConnected && automationLastActivityAt
+    ? new Date(automationLastActivityAt + idleMs).toISOString()
+    : null;
+  return {
+    ...automationLifecycleSettings,
+    state: automationActiveRequests > 0 || automationBackgroundActive ? "active" : processRunning ? "connected" : "ready",
+    processRunning,
+    activeRequests: automationActiveRequests,
+    lastActivityAt: automationLastActivityAt ? new Date(automationLastActivityAt).toISOString() : null,
+    disconnectAt,
+  };
+}
+
+function broadcastAutomationLifecycle() {
+  const status = automationLifecycleStatus();
+  for (const window of electronWindows) {
+    if (!window.isDestroyed()) window.webContents.send("automation-engine:lifecycle", status);
+  }
+  return status;
+}
+
+function scheduleAutomationIdleDisconnect() {
+  if (automationIdleTimer) clearTimeout(automationIdleTimer);
+  automationIdleTimer = null;
+  if (!automationProcess || automationActiveRequests > 0 || automationBackgroundActive) return;
+  if (!automationLifecycleSettings.keepConnected) {
+    stopAutomationEngine("operation-completed");
+    return;
+  }
+  const idleMs = automationLifecycleSettings.idleMinutes * 60 * 1000;
+  const elapsed = automationLastActivityAt ? Date.now() - automationLastActivityAt : 0;
+  automationIdleTimer = setTimeout(() => {
+    if (automationActiveRequests === 0 && !automationBackgroundActive) stopAutomationEngine("idle-timeout");
+  }, Math.max(1000, idleMs - elapsed));
+  automationIdleTimer.unref?.();
+}
+
+function markAutomationActivity(started) {
+  automationLastActivityAt = Date.now();
+  automationActiveRequests = Math.max(0, automationActiveRequests + (started ? 1 : -1));
+  if (automationIdleTimer) clearTimeout(automationIdleTimer);
+  automationIdleTimer = null;
+  if (!started) scheduleAutomationIdleDisconnect();
+  broadcastAutomationLifecycle();
+}
+
 function startAutomationEngine() {
-  if (automationProcess) return;
+  if (automationProcess) return automationLifecycleStatus();
   automationProcess = utilityProcess.fork(path.join(ROOT, "automation-engine", "worker.cjs"), [], {
     serviceName: "Mavat Playwright Engine",
     stdio: "pipe",
@@ -327,12 +394,24 @@ function startAutomationEngine() {
       if (!pending) return;
       clearTimeout(pending.timeout);
       automationRequests.delete(message.id);
+      markAutomationActivity(false);
       if (message.ok) pending.resolve(message.result);
-      else pending.reject(new Error(message.error || "פעולת Playwright נכשלה"));
+      else {
+        automationBackgroundActive = false;
+        scheduleAutomationIdleDisconnect();
+        pending.reject(new Error(message.error || "פעולת Playwright נכשלה"));
+      }
       return;
     }
     if (message?.kind === "event") {
       const eventType = String(message.type || "unknown");
+      if (eventType === "run-started") automationBackgroundActive = true;
+      if (["run-completed", "run-failed"].includes(eventType)) {
+        automationBackgroundActive = false;
+        automationLastActivityAt = Date.now();
+        scheduleAutomationIdleDisconnect();
+      }
+      broadcastAutomationLifecycle();
       automationEventSummary.set(eventType, (automationEventSummary.get(eventType) || 0) + 1);
       for (const window of electronWindows) {
         if (!automationEventSubscribers.has(window.webContents.id)) continue;
@@ -349,12 +428,19 @@ function startAutomationEngine() {
       });
     }
   });
+  const processRef = automationProcess;
   automationProcess.on("exit", () => {
+    if (automationProcess !== processRef && automationProcess !== null) return;
     automationProcess = null;
+    if (automationIdleTimer) clearTimeout(automationIdleTimer);
+    automationIdleTimer = null;
+    automationActiveRequests = 0;
+    automationBackgroundActive = false;
     for (const pending of automationRequests.values()) {
       clearTimeout(pending.timeout); pending.reject(new Error("מנוע Playwright נסגר"));
     }
     automationRequests.clear();
+    broadcastAutomationLifecycle();
   });
   if (!automationEventSummaryTimer) {
     automationEventSummaryTimer = setInterval(() => {
@@ -367,6 +453,35 @@ function startAutomationEngine() {
     }, 5000);
     automationEventSummaryTimer.unref?.();
   }
+  automationLastActivityAt = Date.now();
+  scheduleAutomationIdleDisconnect();
+  logLine("playwright-lifecycle", "engine-started");
+  return broadcastAutomationLifecycle();
+}
+
+function stopAutomationEngine(reason = "manual") {
+  if (automationIdleTimer) clearTimeout(automationIdleTimer);
+  automationIdleTimer = null;
+  if (automationActiveRequests > 0 && reason === "manual") {
+    throw new Error("לא ניתן לנתק את המנוע בזמן פעולה פעילה; עצור תחילה את ההרצה");
+  }
+  const processRef = automationProcess;
+  automationProcess = null;
+  automationActiveRequests = 0;
+  if (processRef) processRef.kill();
+  logLine("playwright-lifecycle", `engine-stopped reason=${reason}`);
+  return broadcastAutomationLifecycle();
+}
+
+function configureAutomationLifecycle(settings = {}) {
+  const idleMinutes = Math.max(1, Math.min(240, Number(settings.idleMinutes) || 20));
+  automationLifecycleSettings = {
+    autoConnect: Boolean(settings.autoConnect),
+    keepConnected: settings.keepConnected !== false,
+    idleMinutes,
+  };
+  scheduleAutomationIdleDisconnect();
+  return broadcastAutomationLifecycle();
 }
 
 function dockAutomationWindows(profileDir) {
@@ -431,6 +546,13 @@ async function waitFor(url, processRef, label) {
 }
 
 async function startServices() {
+  if (ISOLATED_LOCALHOST_MODE) {
+    logLine("startup", `isolated-localhost verify ${WEB_URL}`);
+    await waitFor(WEB_URL, null, "ממשק localhost הקיים");
+    await waitFor(`${WEB_URL}/api/workflow`, null, "מנוע Python דרך localhost הקיים");
+    logLine("startup", `isolated-localhost-ready ${WEB_URL}`);
+    return;
+  }
   logLine("startup", "reserve-python-port");
   // Do not reuse an orphaned backend from an older/unpacked build. When the
   // preferred port is occupied, this desktop instance receives a private port.
@@ -473,18 +595,31 @@ async function startServices() {
 }
 
 async function createWindow() {
-  logLine("startup", JSON.stringify({ phase: "create-window", version: app.getVersion(), packaged: app.isPackaged }));
-  loadLinkedWindowsSetting();
+  logLine("startup", JSON.stringify({
+    phase: "create-window",
+    version: app.getVersion(),
+    packaged: app.isPackaged,
+    isolatedLocalhost: ISOLATED_LOCALHOST_MODE,
+    webUrl: WEB_URL,
+  }));
+  if (ISOLATED_LOCALHOST_MODE) linkedWindows = false;
+  else loadLinkedWindowsSetting();
   await startServices();
-  startAutomationEngine();
+  await loadAutomationLifecycleSettings();
+  if (ISOLATED_AUTOMATION_ENGINE || automationLifecycleSettings.autoConnect) {
+    startAutomationEngine();
+    logLine("startup", "automation-engine-autoconnected");
+  } else {
+    logLine("startup", "automation-engine-lazy");
+  }
   Menu.setApplicationMenu(null);
   const window = new BrowserWindow({
     width: 1540, height: 980, minWidth: 560, minHeight: 620, show: false,
     title: "משרד טננבאום אדריכלות — מערכת מבא״ת", backgroundColor: "#f7f9fb",
     webPreferences: {
-      preload: path.join(__dirname, "preload.cjs"), contextIsolation: true,
+      preload: process.env.MAVAT_DISABLE_PRELOAD === "1" ? undefined : path.join(__dirname, "preload.cjs"), contextIsolation: true,
       nodeIntegration: false, sandbox: true, zoomFactor: 0.9,
-      backgroundThrottling: false,
+      backgroundThrottling: BACKGROUND_THROTTLING,
     },
   });
   mainWindow = window;
@@ -505,9 +640,12 @@ async function createWindow() {
   })));
   window.on("responsive", () => logLine("renderer-responsive", window.webContents.getURL()));
   electronWindows.add(window);
+  const webContentsId = window.webContents.id;
   window.on("closed", () => {
-    automationEventSubscribers.delete(window.webContents.id);
+    // webContents is already destroyed when "closed" fires.
+    automationEventSubscribers.delete(webContentsId);
     electronWindows.delete(window);
+    if (mainWindow === window) mainWindow = null;
     if (rendererReloadTimer) clearTimeout(rendererReloadTimer);
     rendererReloadTimer = null;
   });
@@ -549,7 +687,7 @@ async function createWindow() {
     // before Electron started; previously it only started after open-browser.
     // The desktop application owns one persistent browser session. BrowserOS
     // stays in the background; the Chrome fallback is linked after it opens.
-    if (BROWSER_AUTOSTART) {
+    if (BROWSER_AUTOSTART && !ISOLATED_LOCALHOST_MODE) {
       setTimeout(() => {
         void openAndDockAutomationBrowser().catch((error) => {
           window.webContents.send("automation-engine:event", {
@@ -560,12 +698,48 @@ async function createWindow() {
       }, 300);
     }
   });
-  await window.loadURL(app.isPackaged ? `${PYTHON_URL}/app/` : WEB_URL);
+  await window.loadURL(ISOLATED_LOCALHOST_MODE
+    ? WEB_URL
+    : (app.isPackaged ? `${PYTHON_URL}/app/` : WEB_URL));
   // Probe only the fully loaded renderer. Starting executeJavaScript probes
   // while Chromium is still parsing the production bundle creates false
   // stall reports on slower machines and competes with first paint.
   startRuntimeDiagnostics(window);
   logLine("startup", "initial-url-loaded");
+}
+
+function getJson(url) {
+  return new Promise((resolve, reject) => {
+    const request = http.get(url, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { body += chunk; });
+      response.on("end", () => {
+        try { resolve(JSON.parse(body)); }
+        catch (error) { reject(error); }
+      });
+    });
+    request.setTimeout(2000, () => request.destroy(new Error("settings timeout")));
+    request.on("error", reject);
+  });
+}
+
+async function loadAutomationLifecycleSettings() {
+  const baseUrl = ISOLATED_LOCALHOST_MODE ? WEB_URL : PYTHON_URL;
+  try {
+    const data = await getJson(`${baseUrl}/api/settings`);
+    const settings = data?.automation_engine || {};
+    configureAutomationLifecycle({
+      autoConnect: process.env.MAVAT_AUTOMATION_ENGINE_AUTOCONNECT === undefined
+        ? settings.auto_connect
+        : process.env.MAVAT_AUTOMATION_ENGINE_AUTOCONNECT === "1",
+      keepConnected: settings.keep_connected,
+      idleMinutes: settings.idle_minutes,
+    });
+    logLine("playwright-lifecycle", `settings-loaded ${JSON.stringify(automationLifecycleSettings)}`);
+  } catch (error) {
+    logLine("playwright-lifecycle", `settings-load-failed ${error.message || String(error)}`);
+  }
 }
 
 function reserveFreePort(preferredPort) {
@@ -606,6 +780,7 @@ ipcMain.on("renderer-click", (event, payload = {}) => {
 ipcMain.on("renderer-diagnostics", (event, payload = {}) => {
   if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return;
   lastRendererPulse = {
+    receivedAt: Date.now(),
     at: Number(payload.at) || Date.now(),
     lagMs: Number(payload.lagMs) || 0,
     visibility: String(payload.visibility || ""),
@@ -613,7 +788,12 @@ ipcMain.on("renderer-diagnostics", (event, payload = {}) => {
     lastEvent: payload.lastEvent || null,
     longTask: payload.longTask || null,
   };
-  if (lastRendererPulse.lagMs >= 250) logLine("renderer-lag", JSON.stringify(lastRendererPulse));
+  // Chromium intentionally throttles timers while a window is hidden or
+  // minimized. Reporting that as renderer lag produced noisy false alarms
+  // that looked identical to the real visible-window freeze.
+  if (lastRendererPulse.visibility === "visible" && lastRendererPulse.lagMs >= 250) {
+    logLine("renderer-lag", JSON.stringify(lastRendererPulse));
+  }
 });
 ipcMain.handle("copy-text", (_event, text) => { clipboard.writeText(text); return true; });
 ipcMain.handle("desktop:show-window", () => {
@@ -640,7 +820,9 @@ ipcMain.handle("desktop:navigate-route", async (event, route) => {
   if (!/^\/[a-z0-9/_-]*$/i.test(normalized)) throw new Error("נתיב לא תקין");
   const window = BrowserWindow.fromWebContents(event.sender);
   if (!window || window.isDestroyed() || window !== mainWindow) return false;
-  const target = app.isPackaged
+  const target = ISOLATED_LOCALHOST_MODE
+    ? `${WEB_URL}${normalized}`
+    : app.isPackaged
     ? `${PYTHON_URL}/app${normalized === "/" ? "/" : normalized}`
     : `${WEB_URL}${normalized}`;
   await window.loadURL(target);
@@ -665,6 +847,10 @@ ipcMain.handle("automation-engine:command", async (_event, command, payload) => 
   }
   return result;
 });
+ipcMain.handle("automation-engine:status", () => automationLifecycleStatus());
+ipcMain.handle("automation-engine:connect", () => startAutomationEngine());
+ipcMain.handle("automation-engine:disconnect", () => stopAutomationEngine("manual"));
+ipcMain.handle("automation-engine:configure", (_event, settings) => configureAutomationLifecycle(settings || {}));
 ipcMain.on("automation-engine:subscribe", (event) => {
   automationEventSubscribers.add(event.sender.id);
 });
@@ -704,6 +890,7 @@ app.on("before-quit", () => {
   if (rendererReloadTimer) clearTimeout(rendererReloadTimer);
   if (diagnosticsTimer) clearInterval(diagnosticsTimer);
   if (automationEventSummaryTimer) clearInterval(automationEventSummaryTimer);
+  if (automationIdleTimer) clearTimeout(automationIdleTimer);
   automationEventSummaryTimer = null;
   globalShortcut.unregisterAll();
   stopWindowLinking();

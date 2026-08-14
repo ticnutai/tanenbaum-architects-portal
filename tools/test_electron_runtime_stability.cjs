@@ -100,11 +100,16 @@ async function waitForUi(cdp) {
   while (Date.now() < deadline) {
     try {
       const result = await cdp.call("Runtime.evaluate", {
-        expression: "({ href: location.href, ready: document.readyState, buttons: document.querySelectorAll('button').length })",
+        expression: "({ href: location.href, ready: document.readyState, buttons: document.querySelectorAll('button').length, version: document.querySelector('[data-testid=app-version]')?.textContent?.trim() || '' })",
         returnByValue: true,
       });
       lastValue = result.result.value;
-      if (lastValue.ready === "complete" && lastValue.buttons > 0 && /\/app\/?/.test(lastValue.href)) {
+      if (
+        lastValue.ready === "complete" &&
+        lastValue.buttons > 0 &&
+        /^גרסה\s+\d+\.\d+\.\d+$/.test(lastValue.version) &&
+        /\/app\/?/.test(lastValue.href)
+      ) {
         return lastValue;
       }
     } catch {
@@ -113,6 +118,67 @@ async function waitForUi(cdp) {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(`Packaged UI did not become ready: ${JSON.stringify(lastValue)}`);
+}
+
+async function evaluate(cdp, expression, timeoutMs = 3000) {
+  const result = await cdp.call("Runtime.evaluate", {
+    expression,
+    returnByValue: true,
+    awaitPromise: true,
+  }, timeoutMs);
+  if (result.exceptionDetails) {
+    throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
+  }
+  return result.result.value;
+}
+
+async function waitForHref(cdp, suffix, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  let href = "";
+  while (Date.now() < deadline) {
+    try {
+      href = await evaluate(cdp, "location.href");
+      if (new URL(href).pathname.endsWith(suffix)) return href;
+    } catch {
+      // A failed evaluation is useful evidence only if the route never settles.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Electron did not navigate to ${suffix}; last URL: ${href}`);
+}
+
+async function clickSidebarRoute(cdp, suffix) {
+  const clicked = await evaluate(cdp, `(() => {
+    const link = [...document.querySelectorAll('a[href]')].find((item) => new URL(item.href).pathname.endsWith(${JSON.stringify("__SUFFIX__")}));
+    if (!link) return false;
+    link.click();
+    return true;
+  })()`.replace('"__SUFFIX__"', JSON.stringify(suffix)));
+  assert.equal(clicked, true, `Missing sidebar link for ${suffix}`);
+  return waitForHref(cdp, suffix);
+}
+
+async function clickButtonByText(cdp, text) {
+  const clicked = await evaluate(cdp, `(() => {
+    const button = [...document.querySelectorAll('button')].find((item) => item.textContent?.trim() === ${JSON.stringify("__TEXT__")});
+    if (!button || button.disabled) return false;
+    button.click();
+    return true;
+  })()`.replace('"__TEXT__"', JSON.stringify(text)));
+  assert.equal(clicked, true, `Missing enabled button: ${text}`);
+}
+
+async function waitForEngineState(cdp, expectedRunning, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  let status = null;
+  while (Date.now() < deadline) {
+    try {
+      status = await evaluate(cdp, "window.mavatDesktop.automationEngine.status()");
+      if (status.processRunning === expectedRunning) return status;
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Automation engine did not reach processRunning=${expectedRunning}: ${JSON.stringify(status)}`);
 }
 
 async function main() {
@@ -127,7 +193,7 @@ async function main() {
       MAVAT_DATA_DIR: appDataDir,
       MAVAT_ELECTRON_DEBUG_PORT: String(debugPort),
       MAVAT_PYTHON_PORT: "19473",
-      MAVAT_ELECTRON_START_HIDDEN: "1",
+      MAVAT_ELECTRON_START_HIDDEN: process.env.MAVAT_QA_START_HIDDEN || "1",
       MAVAT_QA_ALLOW_MULTI_INSTANCE: "1",
       MAVAT_SKIP_BROWSER_AUTOSTART: process.env.MAVAT_QA_SKIP_BROWSER_AUTOSTART || "1",
       MAVAT_BROWSER_AUTOSTART: process.env.MAVAT_QA_BROWSER_AUTOSTART || "0",
@@ -135,8 +201,12 @@ async function main() {
       MAVAT_ENABLE_CONTINUOUS_TRACE: "0",
     },
   });
+  let stderr = "";
   child.stdout.on("data", (chunk) => process.stdout.write(`[electron] ${chunk}`));
-  child.stderr.on("data", (chunk) => process.stderr.write(`[electron-error] ${chunk}`));
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk.toString("utf8");
+    process.stderr.write(`[electron-error] ${chunk}`);
+  });
   child.once("exit", (code, signal) => {
     if (!qaPassed) process.stderr.write(`[electron-exit] code=${code} signal=${signal}\n`);
   });
@@ -148,6 +218,37 @@ async function main() {
     await cdp.ready;
     await cdp.call("Runtime.enable");
     const initialUi = await waitForUi(cdp);
+    const documentTimeOrigin = await evaluate(cdp, "performance.timeOrigin");
+    const routeSequence = (process.env.MAVAT_QA_ROUTE_SEQUENCE || "logs,settings")
+      .split(",")
+      .map((route) => `/${route.trim().replace(/^\/+/, "")}`)
+      .filter((route) => route.length > 1);
+    for (const route of routeSequence) await clickSidebarRoute(cdp, route);
+    const settingsState = await evaluate(cdp, `({
+      href: location.href,
+      heading: document.querySelector('h1')?.textContent?.trim() || '',
+      timeOrigin: performance.timeOrigin,
+      controls: document.querySelectorAll('button,input,select').length,
+    })`);
+    if (routeSequence.at(-1) === "/settings") {
+      assert.match(settingsState.heading, /הגדרות/, "Settings heading did not render after navigation");
+      assert.ok(settingsState.controls > 0, "Settings lost its interactive controls");
+    }
+    assert.equal(
+      settingsState.timeOrigin,
+      documentTimeOrigin,
+      "Logs to Settings replaced the Electron document instead of using SPA navigation",
+    );
+    let engineLifecycle = null;
+    if (process.env.MAVAT_QA_AUTOMATION_ENGINE === "1") {
+      await clickButtonByText(cdp, "חיבור עכשיו");
+      const connected = await waitForEngineState(cdp, true);
+      assert.equal(connected.processRunning, true, "Automation worker did not start");
+      assert.equal(connected.state, "connected", "Automation worker did not become connected");
+      const workerStatus = await evaluate(cdp, "window.mavatDesktop.automationEngine.command('status')", 15_000);
+      assert.equal(workerStatus.ready, true, "Automation worker did not answer a real command");
+      engineLifecycle = { connected, workerStatus };
+    }
     const startedAt = Date.now();
     let probes = 0;
     let maxProbeMs = 0;
@@ -173,7 +274,25 @@ async function main() {
     assert.doesNotMatch(log, /\[(?:python-exit|load-error)\]/, log.slice(-4000));
     assert.ok(probes >= Math.floor(durationMs / 700), `Too few renderer probes: ${probes}`);
     assert.ok(maxProbeMs < 1500, `Renderer probe latency was ${maxProbeMs}ms`);
-    console.log(JSON.stringify({ ok: true, durationMs, probes, maxProbeMs, initialUi, logFile }));
+    if (engineLifecycle) {
+      await clickButtonByText(cdp, "ניתוק עכשיו");
+      const disconnected = await waitForEngineState(cdp, false);
+      assert.equal(disconnected.processRunning, false, "Automation worker did not stop cleanly");
+      assert.equal(disconnected.state, "ready", "Automation worker did not return to lazy-ready state");
+      engineLifecycle.disconnected = disconnected;
+    }
+    if (process.env.MAVAT_QA_GRACEFUL_CLOSE === "1") {
+      // A successful window.close() destroys the DevTools target before CDP can
+      // always acknowledge Runtime.evaluate. The process exit is authoritative.
+      void cdp.call("Runtime.evaluate", { expression: "window.close()" }).catch(() => undefined);
+      const exit = await Promise.race([
+        new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal }))),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Graceful Electron close timed out")), 10_000)),
+      ]);
+      assert.equal(exit.code, 0, `Electron exited abnormally: ${JSON.stringify(exit)}`);
+      assert.doesNotMatch(stderr, /Object has been destroyed|Uncaught Exception/, stderr);
+    }
+    console.log(JSON.stringify({ ok: true, durationMs, probes, maxProbeMs, initialUi, settingsState, engineLifecycle, logFile }));
     qaPassed = true;
   } finally {
     cdp?.close();

@@ -61,6 +61,13 @@ export function SystemConsoleDock() {
         dir="rtl"
         aria-label="כלי פיתוח"
       >
+        <span
+          className="px-2 font-mono text-[10px] tabular-nums text-muted-foreground"
+          data-testid="app-version"
+          title={`גרסת המערכת ${import.meta.env.VITE_APP_VERSION}`}
+        >
+          גרסה {import.meta.env.VITE_APP_VERSION}
+        </span>
         <Button
           type="button"
           variant={open ? "default" : "ghost"}
